@@ -1,0 +1,11 @@
+[tools]
+python = '3.13'
+
+[env]
+_.python.venv = { create = true, path = '.venv', uv_create_args = ['--seed'] }
+
+[tasks.lint]
+run = "pylint sound_monitor"
+
+[tasks.test]
+run = "pytest sound_monitor"

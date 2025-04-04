@@ -1,0 +1,11 @@
+# macos
+.DS_Store
+
+# dev
+.app/
+
+# python
+.venv/
+.pytest_cache/
+.egg-info/
+__pycache__/

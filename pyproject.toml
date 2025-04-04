@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sound_monitor"
+version = "0.1.0"
+description = "monitor sounds and record dog barks"
+requires-python = ">=3.11"
+license = { file = "license.md" }
+authors = [{ name = "Ben Blazak" }]
+dependencies = [
+    "numpy",
+    "scipy",
+    "psutil",
+    "librosa",
+    "sounddevice",
+
+    "tensorflow; platform_system == 'Darwin'",
+    "tflite-runtime; platform_system == 'Linux'",
+]
+
+[project.optional-dependencies]
+dev = ["pylint", "black", "pytest"]
+
+[project.scripts]
+sound-monitor = "sound_monitor.main:main"
