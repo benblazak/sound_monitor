@@ -13,18 +13,10 @@ monitor sounds and record dog barks
 
 see [sound_monitor/config.py](./sound_monitor/config.py)
 
-### dependencies
-
-see [scripts](./scripts)
-
-```bash
-./scripts/install-sys-deps.sh
-./scripts/download-yamnet.sh
-```
-
 ### install
 
 ```bash
+./scripts/pre-install.sh
 python -m pip install .
 ```
 
@@ -39,6 +31,7 @@ sound-monitor
 install [mise](https://mise.jdx.dev/getting-started.html)
 
 ```bash
+./scripts/pre-install.sh
 mise install  # install tools
 mise exec -- python -m pip install --editable ".[dev]"
 ```
