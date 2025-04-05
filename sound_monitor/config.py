@@ -1,17 +1,15 @@
-from datetime import datetime
 import logging
-from pathlib import Path
-from importlib import resources
-from dataclasses import dataclass
 import sys
-from typing import Optional
-import sounddevice as sd
 import sysconfig
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+import sounddevice as sd
 
 from sound_monitor.util.types.singleton import Singleton
 
 
-@dataclass
 class Config(Singleton["Config"]):
 
     data_dir: Path = Path(__file__).parent.parent / ".app"

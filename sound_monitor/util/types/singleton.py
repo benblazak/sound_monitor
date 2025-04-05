@@ -23,12 +23,3 @@ class Singleton(Generic[T], ABC):
             if cls._instance is None:
                 cls._instance = cls()
             return cls._instance
-
-    def init(self) -> None:
-        """Initialize the singleton instance.
-
-        Default implementation is a no-op since most singletons handle initialization
-        in __init__. Override this method if additional initialization is needed
-        after instance creation.
-        """
-        pass

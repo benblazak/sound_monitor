@@ -1,6 +1,14 @@
 {
-    "debug.javascript.defaultRuntimeExecutable": {
-        "pwa-node": "/Users/ben/.local/share/mise/shims/node"
-    },
-    "python.defaultInterpreterPath": "${workspaceFolder}/.venv"
+  "debug.javascript.defaultRuntimeExecutable": {
+    "pwa-node": "/Users/ben/.local/share/mise/shims/node"
+  },
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv",
+  "editor.formatOnSave": true,
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": true
+    }
+  }
 }

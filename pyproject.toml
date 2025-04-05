@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pylint", "black", "pytest"]
+dev = ["pylint", "pytest", "black", "isort"]
 
 [project.scripts]
 sound-monitor = "sound_monitor.main:main"
