@@ -14,7 +14,7 @@ from sound_monitor.util.types.singleton import Singleton
 @dataclass
 class Config(Singleton["Config"]):
 
-    data_dir: Path = Path(__file__).parent.parent / ".app" / "data"
+    data_dir: Path = Path(__file__).parent.parent / ".app"
 
     @property
     def app_dir(self) -> Path:
@@ -40,19 +40,6 @@ class Config(Singleton["Config"]):
     def yamnet_class_map(self) -> Path:
         return self.yamnet_dir / "yamnet_class_map.csv"
 
-    date_format: str = "%Y-%m-%d"
-    datetime_format: str = "%Y-%m-%d_%H-%M-%S"
-
-    @property
-    def prefix(
-        self,
-        time: Optional[datetime] = None,
-        format: Optional[str] = None,
-    ) -> str:
-        time = time or datetime.now()
-        format = format or self.datetime_format
-        return time.strftime(format)
-
     @property
     def uma8_device_id(self) -> int | None:
         devices = sd.query_devices()
@@ -62,6 +49,18 @@ class Config(Singleton["Config"]):
                 and device["max_input_channels"] == 8
             ):
                 return i
+
+    date_format: str = "%Y-%m-%d"
+    datetime_format: str = "%Y-%m-%d_%H-%M-%S"
+
+    def prefix(
+        self,
+        time: Optional[datetime] = None,
+        format: Optional[str] = None,
+    ) -> str:
+        time = time or datetime.now()
+        format = format or self.datetime_format
+        return time.strftime(format)
 
     def init(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
