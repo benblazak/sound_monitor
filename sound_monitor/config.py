@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import sounddevice as sd
 
 from sound_monitor.util.types.singleton import Singleton
@@ -37,6 +38,34 @@ class Config(Singleton["Config"]):
     @property
     def yamnet_class_map(self) -> Path:
         return self.yamnet_dir / "yamnet_class_map.csv"
+
+    # speed of sound (meters/second)
+    # - varies with temperature (~0.6 m/s per °C) (and not with altitude)
+    # - default 343.0 m/s at 20°C (standard room temperature)
+    # - for Tucson AZ (5-39°C), the speed varies by ~5.9% over the temperature
+    #   range. this introduces timing differences of ~15µs over our max array
+    #   distance (8.6cm) which is small enough to not significantly impact
+    #   direction finding
+    speed_of_sound: float = 343.0
+
+    uma8_sample_rate: int = 48000
+    uma8_sample_format: np.dtype = np.float32
+
+    # 8 channels, but only 7 mics, so the last channel is empty
+    uma8_output_channels: int = 7
+
+    # microphone array geometry (meters)
+    # - positions from minidsp.cfg in order of input channels
+    # - channel 0 is center, 1-6 form a hexagon
+    uma8_mic_positions: tuple[tuple[float, float, float], ...] = (
+        (0.000, 0.000, 0.000),  # center (ch 0)
+        (0.000, 0.043, 0.000),  # top (ch 1)
+        (0.037, 0.021, 0.000),  # top right (ch 2)
+        (0.037, -0.021, 0.000),  # bottom right (ch 3)
+        (0.000, -0.043, 0.000),  # bottom (ch 4)
+        (-0.037, -0.021, 0.000),  # bottom left (ch 5)
+        (-0.037, 0.021, 0.000),  # top left (ch 6)
+    )
 
     @property
     def uma8_device_id(self) -> int | None:

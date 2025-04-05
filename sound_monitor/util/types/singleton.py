@@ -2,13 +2,14 @@
 
 import threading
 from abc import ABC
-from typing import TypeVar, Generic
+from typing import Generic, TypeVar
 
 T = TypeVar("T")  # For the concrete singleton type
 
 
 class Singleton(Generic[T], ABC):
-    """Base class for singletons.
+    """
+    Base class for singletons.
 
     Type parameter T should be the concrete singleton class itself.
     """

@@ -9,6 +9,8 @@ _logger = logging.getLogger(__name__)
 
 _audio = Audio.get()
 
+# TODO mail runtime errors
+
 
 def main():
     _config.init()
