@@ -6,12 +6,12 @@ _logger = logging.getLogger(__name__)
 try:
     from ben.mail import mail as _mail
 
-    def mail(*, subject: str, body: str):
+    def mail(*, subject: str, body: str) -> None:
         _mail(subject=subject, body=body)
 
 except ImportError:
 
-    def mail(*, subject: str, body: str):
+    def mail(*, subject: str, body: str) -> None:
         _logger.info(
             "attempted to send mail\n"
             + json.dumps(
