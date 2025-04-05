@@ -16,7 +16,7 @@ see [sound_monitor/config.py](./sound_monitor/config.py)
 ### install
 
 ```bash
-./scripts/pre-install.sh
+./pre-install.sh
 python -m pip install .
 ```
 
@@ -31,7 +31,7 @@ sound-monitor
 install [mise](https://mise.jdx.dev/getting-started.html)
 
 ```bash
-./scripts/pre-install.sh
+./pre-install.sh
 mise install  # install tools
 mise exec -- python -m pip install --editable ".[dev]"
 ```
