@@ -3,7 +3,6 @@ import sys
 import sysconfig
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import sounddevice as sd
@@ -82,8 +81,8 @@ class Config(Singleton["Config"]):
 
     def prefix(
         self,
-        time: Optional[datetime] = None,
-        format: Optional[str] = None,
+        time: datetime | None = None,
+        format: str | None = None,
     ) -> str:
         time = time or datetime.now()
         format = format or self.datetime_format
