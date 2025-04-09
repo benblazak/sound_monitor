@@ -1,7 +1,10 @@
 import logging
+from collections import deque
+from datetime import datetime
 
 import numpy as np
 import sounddevice as sd
+from scipy.signal import butter, resample_poly, sosfilt
 
 from sound_monitor.config import Config
 from sound_monitor.util.types.singleton import Singleton
@@ -10,9 +13,20 @@ _config = Config.get()
 _logger = logging.getLogger(__name__)
 
 
+class AudioBlock:
+    def __init__(self, data: np.ndarray, time: float) -> None:
+        self.raw_data: np.ndarray = data  # shape (block_size, channels)
+        self.timestamp = datetime.fromtimestamp(time)
+
+        # TODO processed data
+
+
 class Audio(Singleton["Audio"]):
     def __init__(self) -> None:
-        self.block_size: int = _config.uma8_sample_rate // 10
+        self.blocks_per_second: int = 10
+        self.block_size: int = _config.uma8_sample_rate // self.blocks_per_second
+        self.buffer_size: int = _config.audio_buffer_seconds * self.blocks_per_second
+        self.buffer: deque = deque(maxlen=self.buffer_size)
 
         self.stream: sd.InputStream | None = None
 
@@ -58,4 +72,4 @@ class Audio(Singleton["Audio"]):
         if status:
             _logger.warning(f"audio callback status: {status}")
 
-        # TODO
+        self.buffer.append(AudioBlock(indata.copy(), time.inputBufferAdcTime))

@@ -38,6 +38,21 @@ class Config(Singleton["Config"]):
     def yamnet_class_map(self) -> Path:
         return self.yamnet_dir / "yamnet_class_map.csv"
 
+    audio_buffer_seconds: int = 30  # seconds
+    audio_mono_channel: int = 0  # center - see uma8_mic_positions
+    audio_stereo_channels: tuple[int, int] = (
+        1,
+        4,
+    )  # L and R facing away from my house - see uma8_mic_positions
+    audio_bandpass_filter: tuple[float, float] = (400, 4000)  # hz
+
+    # degrees to add to array azimuth for true north
+    # - array azimuth 0 is at +x (usb cord)
+    # - if usb points east, north is at -90, offset is +90
+    # - if usb points west, north is at +90, offset is -90
+    # - if usb points south, north is at +-180, offset is +=180
+    direction_azimuth_offset: int = -90
+
     # speed of sound (meters/second)
     # - varies with temperature (~0.6 m/s per °C) (and not with altitude)
     # - default 343.0 m/s at 20°C (standard room temperature)
@@ -47,15 +62,20 @@ class Config(Singleton["Config"]):
     #   direction finding
     speed_of_sound: float = 343.0
 
+    # sample rates: 11.2, 16, 32, 44.1, 48 (khz)
     uma8_sample_rate: int = 48000
+
     uma8_sample_format: np.dtype = np.float32
 
-    # 8 channels, but only 7 mics, so the last channel is empty
+    # uma8 raw mode:
+    # 8ch of audio (7ch coming from the mems mics + 1 ch from spare pdm input
+    # input) are available as raw audio (non processed)
     uma8_output_channels: int = 7
 
     # microphone array geometry (meters)
     # - positions from minidsp.cfg in order of input channels
     # - channel 0 is center, 1-6 form a hexagon
+    # - usb cord is on the right
     uma8_mic_positions: tuple[tuple[float, float, float], ...] = (
         (0.000, 0.000, 0.000),  # center (ch 0)
         (0.000, 0.043, 0.000),  # top (ch 1)
