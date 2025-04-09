@@ -1,6 +1,7 @@
 import logging
 from collections import deque
 from datetime import datetime
+from math import gcd
 
 import numpy as np
 import sounddevice as sd
@@ -14,6 +15,12 @@ _logger = logging.getLogger(__name__)
 
 
 class AudioBlock:
+    _resample_yamnet_rate = 16000  # YAMNet requires 16kHz input
+    _resample_source_rate = _config.uma8_sample_rate
+    _resample_g = gcd(_resample_yamnet_rate, _resample_source_rate)
+    _resample_up = _resample_yamnet_rate // _resample_g
+    _resample_down = _resample_source_rate // _resample_g
+
     def __init__(self, data: np.ndarray, time: float) -> None:
         self.raw_data: np.ndarray = data  # shape (block_size, channels)
         self.timestamp = datetime.fromtimestamp(time)
@@ -29,8 +36,11 @@ class AudioBlock:
         mono_channel = _config.audio_mono_channel
         mono_data = data[:, mono_channel]
         filtered_mono = sosfilt(self._sos, mono_data)
-        # TODO the ratio should be calculated
-        self.yamnet_data = resample_poly(filtered_mono, 1, 3)  # 48k to 16k (ratio 1:3)
+        # Use the pre-calculated ratios from Audio singleton
+        audio = Audio.get()
+        self.yamnet_data = resample_poly(
+            filtered_mono, self._resample_up, self._resample_down
+        )  # e.g., 1:3 for 16k:48k
 
         # direction data: all 7 channels, filtered
         self.direction_data = np.zeros_like(data)

@@ -112,11 +112,11 @@ class Config(Singleton["Config"]):
             *["-ar", str(self.uma8_sample_rate)],
             *["-ac", "2"],  # 2 channels
             *["-i", "-"],  # read from stdin
-            "-af",
-            "equalizer=f=80:width_type=h:width=200:g=4,"  # mems eq bass
-            "equalizer=f=2500:width_type=q:width=1:g=-2,"  # mems eq presence
-            "equalizer=f=8000:width_type=h:width=2000:g=-3,"  # mems eq treble
-            "volume=100.0",  # mems eq volume
+            "-af",  # mems eq
+            "equalizer=f=80:width_type=h:width=200:g=4,"  # bass
+            "equalizer=f=2500:width_type=q:width=1:g=-2,"  # presence
+            "equalizer=f=8000:width_type=h:width=2000:g=-3,"  # treble
+            "volume=100.0",
             *["-c:a", "libmp3lame", "-q:a", "2"],  # mp3, vbr quality 2
         ]
 
