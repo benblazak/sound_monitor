@@ -18,7 +18,28 @@ class AudioBlock:
         self.raw_data: np.ndarray = data  # shape (block_size, channels)
         self.timestamp = datetime.fromtimestamp(time)
 
-        # TODO processed data
+        # create bandpass filter
+        nyquist = _config.uma8_sample_rate / 2
+        low, high = _config.audio_bandpass_filter
+        self._sos = butter(
+            4, [low / nyquist, high / nyquist], btype="band", output="sos"
+        )
+
+        # yamnet data: mono, filtered, resampled to 16khz
+        mono_channel = _config.audio_mono_channel
+        mono_data = data[:, mono_channel]
+        filtered_mono = sosfilt(self._sos, mono_data)
+        # TODO the ratio should be calculated
+        self.yamnet_data = resample_poly(filtered_mono, 1, 3)  # 48k to 16k (ratio 1:3)
+
+        # direction data: all 7 channels, filtered
+        self.direction_data = np.zeros_like(data)
+        for ch in range(data.shape[1]):
+            self.direction_data[:, ch] = sosfilt(self._sos, data[:, ch])
+
+        # recording data: just extract the stereo channels
+        left, right = _config.audio_stereo_channels
+        self.recording_data = np.vstack((data[:, left], data[:, right])).T
 
 
 class Audio(Singleton["Audio"]):

@@ -3,6 +3,7 @@ import sys
 import sysconfig
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import sounddevice as sd
@@ -95,6 +96,29 @@ class Config(Singleton["Config"]):
                 and device["max_input_channels"] == 8
             ):
                 return i
+
+    @property
+    def record_ffmpeg_command(self) -> list[str]:
+        """partial ffmpeg command: append output filename to the end"""
+        format_map = {
+            np.float32: "f32le",
+            np.int16: "s16le",
+            np.int32: "s32le",
+            np.float64: "f64le",
+        }
+        return [
+            "ffmpeg",
+            *["-f", format_map[self.uma8_sample_format]],
+            *["-ar", str(self.uma8_sample_rate)],
+            *["-ac", "2"],  # 2 channels
+            *["-i", "-"],  # read from stdin
+            "-af",
+            "equalizer=f=80:width_type=h:width=200:g=4,"  # mems eq bass
+            "equalizer=f=2500:width_type=q:width=1:g=-2,"  # mems eq presence
+            "equalizer=f=8000:width_type=h:width=2000:g=-3,"  # mems eq treble
+            "volume=100.0",  # mems eq volume
+            *["-c:a", "libmp3lame", "-q:a", "2"],  # mp3, vbr quality 2
+        ]
 
     date_format: str = "%Y-%m-%d"
     datetime_format: str = "%Y-%m-%d_%H-%M-%S"
