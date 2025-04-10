@@ -27,7 +27,7 @@ class AudioBlock:
     _bandpass_nyquist = _config.uma8_sample_rate / 2
     _bandpass_low, _bandpass_high = _config.audio_bandpass_filter
     _bandpass_sos = butter(
-        4, # filter order
+        4,  # filter order
         [_bandpass_low / _bandpass_nyquist, _bandpass_high / _bandpass_nyquist],
         btype="band",
         output="sos",
@@ -55,7 +55,7 @@ class AudioBlock:
         self.recording_data = np.vstack((data[:, left], data[:, right])).T
 
 
-class Audio(Singleton["Audio"]):
+class Input(Singleton["Input"]):
     def __init__(self) -> None:
         self.blocks_per_second: int = 10
         self.block_size: int = _config.uma8_sample_rate // self.blocks_per_second
