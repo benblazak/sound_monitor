@@ -19,9 +19,9 @@ class AudioBlock:
     # - eg up:down = 1:3 for 16k:48k
     _resample_yamnet_rate = 16000  # yamnet requires 16khz input
     _resample_source_rate = _config.uma8_sample_rate
-    _resample_g = gcd(_resample_yamnet_rate, _resample_source_rate)
-    _resample_up = _resample_yamnet_rate // _resample_g
-    _resample_down = _resample_source_rate // _resample_g
+    _resample_gcd = gcd(_resample_yamnet_rate, _resample_source_rate)
+    _resample_up = _resample_yamnet_rate // _resample_gcd
+    _resample_down = _resample_source_rate // _resample_gcd
 
     # bandpass filter
     _bandpass_nyquist = _config.uma8_sample_rate / 2
@@ -40,9 +40,9 @@ class AudioBlock:
         # yamnet data: mono, filtered, resampled to 16khz
         mono_channel = _config.audio_mono_channel
         mono_data = data[:, mono_channel]
-        filtered_mono = sosfilt(self._bandpass_sos, mono_data)
+        mono_filtered = sosfilt(self._bandpass_sos, mono_data)
         self.yamnet_data = resample_poly(
-            filtered_mono, self._resample_up, self._resample_down
+            mono_filtered, self._resample_up, self._resample_down
         )
 
         # direction data: all 7 channels, filtered
