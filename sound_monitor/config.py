@@ -63,7 +63,8 @@ class Config(Singleton["Config"]):
     #   direction finding
     speed_of_sound: float = 343.0
 
-    # sample rates: 11.2, 16, 32, 44.1, 48 (khz)
+    # sample rate (hz)
+    # - supported: 11200, 16000, 32000, 44100, 48000
     uma8_sample_rate: int = 48000
 
     uma8_sample_format: np.dtype = np.float32

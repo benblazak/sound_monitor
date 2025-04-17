@@ -15,44 +15,81 @@ _logger = logging.getLogger(__name__)
 
 
 class AudioBlock:
-    # yamnet resample rate
-    # - eg up:down = 1:3 for 16k:48k
-    _resample_yamnet_rate = 16000  # yamnet requires 16khz input
-    _resample_source_rate = _config.uma8_sample_rate
-    _resample_gcd = gcd(_resample_yamnet_rate, _resample_source_rate)
-    _resample_up = _resample_yamnet_rate // _resample_gcd
-    _resample_down = _resample_source_rate // _resample_gcd
+    @classmethod
+    def _init_cls(cls) -> None:
+        # bandpass filter
+        nyquist = _config.uma8_sample_rate / 2
+        low, high = _config.audio_bandpass_filter
 
-    # bandpass filter
-    _bandpass_nyquist = _config.uma8_sample_rate / 2
-    _bandpass_low, _bandpass_high = _config.audio_bandpass_filter
-    _bandpass_sos = butter(
-        4,  # filter order
-        [_bandpass_low / _bandpass_nyquist, _bandpass_high / _bandpass_nyquist],
-        btype="band",
-        output="sos",
-    )
-
-    def __init__(self, data: np.ndarray, time: float) -> None:
-        self.raw_data: np.ndarray = data  # shape (block_size, channels)
-        self.timestamp = datetime.fromtimestamp(time)
-
-        # yamnet data: mono, filtered, resampled to 16khz
-        mono_channel = _config.audio_mono_channel
-        mono_data = data[:, mono_channel]
-        mono_filtered = sosfilt(self._bandpass_sos, mono_data)
-        self.yamnet_data = resample_poly(
-            mono_filtered, self._resample_up, self._resample_down
+        cls._filter_sos = butter(
+            4,  # filter order
+            [low / nyquist, high / nyquist],
+            btype="band",
+            output="sos",
         )
 
-        # direction data: all 7 channels, filtered
-        self.direction_data = np.zeros_like(data)
-        for ch in range(data.shape[1]):
-            self.direction_data[:, ch] = sosfilt(self._bandpass_sos, data[:, ch])
+        # resample to 16khz
+        # - yamnet resample rate is 16khz
+        # - eg up:down = 1:3 for 16k:48k
+        yamnet_rate = 16000  # yamnet requires 16khz input
+        source_rate = _config.uma8_sample_rate
+        g = gcd(yamnet_rate, source_rate)
 
-        # recording data: just extract the stereo channels
+        cls._resample_16khz_up = yamnet_rate // g
+        cls._resample_16khz_down = source_rate // g
+
+    def filter(self, data: np.ndarray) -> np.ndarray:
+        """bandpass filter all channels"""
+        filtered = np.zeros_like(data)
+        for ch in range(data.shape[1]):
+            filtered[:, ch] = sosfilt(self._filter_sos, data[:, ch])
+        return filtered
+
+    def resample_16khz(self, data: np.ndarray) -> np.ndarray:
+        """resample the data to 16khz"""
+        return resample_poly(data, self._resample_16khz_up, self._resample_16khz_down)
+
+    def __init__(self, data: np.ndarray, time: float) -> None:
+        self.data: np.ndarray = data  # shape (block_size, channels)
+        self.timestamp = datetime.fromtimestamp(time)
+
+        self._yamnet_data: np.ndarray | None = None
+        self._direction_data: np.ndarray | None = None
+        self._recording_data: np.ndarray | None = None
+
+    @property
+    def mono_data(self) -> np.ndarray:
+        mono = _config.audio_mono_channel
+        return self.data[:, [mono]]
+
+    @property
+    def stereo_data(self) -> np.ndarray:
         left, right = _config.audio_stereo_channels
-        self.recording_data = np.vstack((data[:, left], data[:, right])).T
+        return self.data[:, [left, right]]
+
+    @property
+    def yamnet_data(self) -> np.ndarray:
+        """mono, filtered, resampled to 16khz"""
+        if self._yamnet_data is None:
+            self._yamnet_data = self.resample_16khz(self.filter(self.mono_data))
+        return self._yamnet_data
+
+    @property
+    def direction_data(self) -> np.ndarray:
+        """all channels, filtered"""
+        if self._direction_data is None:
+            self._direction_data = self.filter(self.data)
+        return self._direction_data
+
+    @property
+    def recording_data(self) -> np.ndarray:
+        """just extract the stereo channels"""
+        if self._recording_data is None:
+            self._recording_data = self.stereo_data
+        return self._recording_data
+
+
+AudioBlock._init_cls()
 
 
 class Input(Singleton["Input"]):
@@ -60,7 +97,7 @@ class Input(Singleton["Input"]):
         self.blocks_per_second: int = 10
         self.block_size: int = _config.uma8_sample_rate // self.blocks_per_second
         self.buffer_size: int = _config.audio_buffer_seconds * self.blocks_per_second
-        self.buffer: deque = deque(maxlen=self.buffer_size)
+        self.buffer: deque[AudioBlock] = deque(maxlen=self.buffer_size)
 
         self.stream: sd.InputStream | None = None
 
