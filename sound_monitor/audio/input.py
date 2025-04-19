@@ -93,13 +93,13 @@ AudioBlock._init_cls()
 
 
 class Input(Singleton["Input"]):
-    def __init__(self) -> None:
-        self.blocks_per_second: int = 10
-        self.block_size: int = _config.uma8_sample_rate // self.blocks_per_second
-        self.buffer_size: int = _config.audio_buffer_seconds * self.blocks_per_second
-        self.buffer: deque[AudioBlock] = deque(maxlen=self.buffer_size)
+    block_size: int = _config.uma8_sample_rate // _config.audio_blocks_per_second
+    buffer_size: int = _config.audio_buffer_seconds * _config.audio_blocks_per_second
 
+    def __init__(self) -> None:
+        self.buffer: deque[AudioBlock] = deque(maxlen=self.buffer_size)
         self.stream: sd.InputStream | None = None
+        self.callbacks: dict[str, dict] = {}
 
     def init(self) -> None:
         self.start()
@@ -133,6 +133,33 @@ class Input(Singleton["Input"]):
         self.stream.close()
         self.stream = None
 
+    def register_callback(
+        self,
+        name: str,
+        callback: callable,
+        interval: int,  # blocks
+    ) -> None:
+        """
+        register a callback
+
+        args
+        - name: must be unique
+        - callback:
+          - args: this Input object
+          - returns: None
+        - interval: number of new blocks availble before next call
+          - see config for number of blocks per second
+        """
+        self.callbacks[name] = {
+            "callback": callback,
+            "interval": interval,
+            "next_call": interval,  # call when 0
+        }
+
+    def remove_callback(self, name: str) -> None:
+        if name in self.callbacks:
+            del self.callbacks[name]
+
     def _callback(
         self,
         indata: np.ndarray,
@@ -144,3 +171,9 @@ class Input(Singleton["Input"]):
             _logger.warning(f"audio callback status: {status}")
 
         self.buffer.append(AudioBlock(indata.copy(), time.inputBufferAdcTime))
+
+        for c in self.callbacks.values():
+            c["next_call"] -= 1
+            if c["next_call"] <= 0:
+                c["callback"](self)
+                c["next_call"] = c["interval"]
