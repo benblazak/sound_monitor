@@ -100,7 +100,7 @@ class Config(Singleton["Config"]):
                 return i
 
     @property
-    def record_ffmpeg_command(self) -> list[str]:
+    def record_ffmpeg_command_partial(self) -> list[str]:
         """partial ffmpeg command: append output filename to the end"""
         format_map = {
             np.float32: "f32le",

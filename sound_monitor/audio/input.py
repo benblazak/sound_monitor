@@ -17,9 +17,10 @@ class Input(Singleton["Input"]):
     buffer_size: int = _config.audio_buffer_seconds * _config.audio_blocks_per_second
 
     def __init__(self) -> None:
+        self._callbacks: dict[str, dict] = {}
+        self._stream: sd.InputStream | None = None
+
         self.buffer: deque[Block] = deque(maxlen=self.buffer_size)
-        self.stream: sd.InputStream | None = None
-        self.callbacks: dict[str, dict] = {}
 
     def init(self) -> None:
         self.start()
@@ -28,12 +29,12 @@ class Input(Singleton["Input"]):
         self.stop()
 
     def start(self) -> None:
-        if self.stream is not None:
+        if self._stream is not None:
             return
 
         _logger.debug("starting")
 
-        self.stream = sd.InputStream(
+        self._stream = sd.InputStream(
             device=_config.uma8_device_id,
             samplerate=_config.uma8_sample_rate,
             channels=_config.uma8_output_channels,
@@ -41,23 +42,23 @@ class Input(Singleton["Input"]):
             callback=self._callback,
             blocksize=self.block_size,
         )
-        self.stream.start()
+        self._stream.start()
 
     def stop(self) -> None:
-        if self.stream is None:
+        if self._stream is None:
             return
 
         _logger.debug("stopping")
 
-        self.stream.stop()
-        self.stream.close()
-        self.stream = None
+        self._stream.stop()
+        self._stream.close()
+        self._stream = None
 
     def register_callback(
         self,
         name: str,
         callback: callable,
-        interval: int,  # blocks
+        interval: int = 1,  # blocks
     ) -> None:
         """
         register a callback
@@ -65,20 +66,19 @@ class Input(Singleton["Input"]):
         args
         - name: must be unique
         - callback:
-          - args: this Input object
-          - return: None
+          - signature: callback(input: Input) -> None
         - interval: number of new blocks availble before next call
           - see config for number of blocks per second
         """
-        self.callbacks[name] = {
+        self._callbacks[name] = {
             "callback": callback,
             "interval": interval,
             "next_call": interval,  # call when 0
         }
 
     def remove_callback(self, name: str) -> None:
-        if name in self.callbacks:
-            del self.callbacks[name]
+        if name in self._callbacks:
+            del self._callbacks[name]
 
     def _callback(
         self,
@@ -92,8 +92,8 @@ class Input(Singleton["Input"]):
 
         self.buffer.append(Block(indata.copy(), time.inputBufferAdcTime))
 
-        for c in self.callbacks.values():
+        for c in self._callbacks.values():
             c["next_call"] -= 1
             if c["next_call"] <= 0:
-                c["callback"](self)
+                c["callback"](input=self)
                 c["next_call"] = c["interval"]

@@ -3,7 +3,6 @@ from datetime import datetime
 from math import gcd
 
 import numpy as np
-import sounddevice as sd
 from scipy.signal import butter, resample_poly, sosfilt
 
 from sound_monitor.config import Config
@@ -49,7 +48,7 @@ class Block:
 
     def __init__(self, data: np.ndarray, time: float) -> None:
         self.data: np.ndarray = data  # shape (block_size, channels)
-        self.timestamp = datetime.fromtimestamp(time)
+        self.time = datetime.fromtimestamp(time)
 
         self._yamnet_data: np.ndarray | None = None
         self._direction_data: np.ndarray | None = None

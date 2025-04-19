@@ -7,10 +7,11 @@ from sound_monitor.util.mail import mail
 _config = Config.get()
 _logger = logging.getLogger(__name__)
 
-_audio = Input.get()
+_input = Input.get()
 
 # TODO mail runtime errors
 
 
 def main():
     _config.init()
+    _input.init()
