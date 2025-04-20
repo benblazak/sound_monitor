@@ -1,5 +1,7 @@
 import logging
+import threading
 from collections import deque
+from collections.abc import Callable
 
 import numpy as np
 import sounddevice as sd
@@ -17,10 +19,13 @@ class Input(Singleton["Input"]):
     buffer_size: int = _config.audio_buffer_seconds * _config.audio_blocks_per_second
 
     def __init__(self) -> None:
-        self._callbacks: dict[str, dict] = {}
         self._stream: sd.InputStream | None = None
 
+        self._callbacks: dict[str, dict] = {}
+        self._callbacks_lock = threading.Lock()
+
         self.buffer: deque[Block] = deque(maxlen=self.buffer_size)
+        self.buffer_lock = threading.Lock()
 
     def init(self) -> None:
         self.start()
@@ -57,28 +62,21 @@ class Input(Singleton["Input"]):
     def register_callback(
         self,
         name: str,
-        callback: callable,
+        callback: Callable[["Input"], None],
+        *,
         interval: int = 1,  # blocks
     ) -> None:
-        """
-        register a callback
-
-        args
-        - name: must be unique
-        - callback:
-          - signature: callback(input: Input) -> None
-        - interval: number of new blocks availble before next call
-          - see config for number of blocks per second
-        """
-        self._callbacks[name] = {
-            "callback": callback,
-            "interval": interval,
-            "next_call": interval,  # call when 0
-        }
+        with self._callbacks_lock:
+            self._callbacks[name] = {
+                "callback": callback,
+                "interval": interval,
+                "next_call": interval,  # call when 0
+            }
 
     def remove_callback(self, name: str) -> None:
-        if name in self._callbacks:
-            del self._callbacks[name]
+        with self._callbacks_lock:
+            if name in self._callbacks:
+                del self._callbacks[name]
 
     def _callback(
         self,
@@ -90,10 +88,12 @@ class Input(Singleton["Input"]):
         if status:
             _logger.warning(f"audio callback status: {status}")
 
-        self.buffer.append(Block(indata.copy(), time.inputBufferAdcTime))
+        with self.buffer_lock:
+            self.buffer.append(Block(indata.copy(), time.inputBufferAdcTime))
 
-        for c in self._callbacks.values():
-            c["next_call"] -= 1
-            if c["next_call"] <= 0:
-                c["callback"](input=self)
-                c["next_call"] = c["interval"]
+        with self._callbacks_lock:
+            for c in self._callbacks.values():
+                c["next_call"] -= 1
+                if c["next_call"] <= 0:
+                    c["callback"](input=self)
+                    c["next_call"] = c["interval"]
