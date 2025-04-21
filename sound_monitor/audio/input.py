@@ -2,6 +2,7 @@ import logging
 import threading
 from collections import deque
 from collections.abc import Callable
+from datetime import timedelta
 
 import numpy as np
 import sounddevice as sd
@@ -15,8 +16,10 @@ _logger = logging.getLogger(__name__)
 
 
 class Input(Singleton["Input"]):
-    block_size: int = _config.uma8_sample_rate // _config.audio_blocks_per_second
-    buffer_size: int = _config.audio_buffer_seconds * _config.audio_blocks_per_second
+    blocks_per_second: int = 10
+    block_length: float = timedelta(seconds=1 / blocks_per_second)
+    block_size: int = _config.uma8_sample_rate // blocks_per_second
+    buffer_size: int = _config.audio_buffer_seconds * blocks_per_second
 
     def __init__(self) -> None:
         self._stream: sd.InputStream | None = None
