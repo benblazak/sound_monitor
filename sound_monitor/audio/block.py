@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import timedelta
 from math import gcd
 
 import numpy as np
@@ -47,8 +47,24 @@ class Block:
         return resample_poly(data, self._resample_16khz_up, self._resample_16khz_down)
 
     def __init__(self, data: np.ndarray, time: float) -> None:
-        self.data: np.ndarray = data  # shape (block_size, channels)
-        self.time = datetime.fromtimestamp(time)
+        # shape (block_size, channels)
+        #
+        # see
+        # - Stream https://python-sounddevice.readthedocs.io/en/latest/api/streams.html#sounddevice.Stream
+        #   - search `indata`
+        self.data: np.ndarray = data
+
+        # see
+        # - InputStream https://python-sounddevice.readthedocs.io/en/latest/api/streams.html#sounddevice.InputStream
+        # - Stream https://python-sounddevice.readthedocs.io/en/latest/api/streams.html#sounddevice.Stream
+        #   - search`time.inputBufferAdcTime`
+        # - time https://python-sounddevice.readthedocs.io/en/latest/api/streams.html#sounddevice.Stream.time
+        #
+        # > The current stream time in seconds.
+        # > ...
+        # > The time values are monotonically increasing and have unspecified origin.
+        # > ...
+        self.time = timedelta(seconds=time)
 
         self._yamnet_data: np.ndarray | None = None
         self._direction_data: np.ndarray | None = None
