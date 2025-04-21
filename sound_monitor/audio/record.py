@@ -65,6 +65,7 @@ class Record:
             raise RuntimeError(f"ffmpeg exited with code {ret}")
 
         if time is not None:
+            # TODO get length from ffprobe in util.audio_length?
             length = self.last_block_time + _input.block_length - self.first_block_time
             trim_length = time - self.first_block_time
             if trim_length >= length:
@@ -112,15 +113,19 @@ class Record:
                 return
 
             # first block
-            if self._process is None:
+            if self.first_block_time is None:
+                # if early
                 if block.time < self.time:
                     continue
+
+                # if late
                 if block.time - self.time > _input.block_length * 1.5:
                     _logger.warning(
                         "recording starting late\n"
                         f"  start: {block.time}\n"
                         f"  start wanted: {self.time}"
                     )
+
                 self.first_block_time = block.time
                 self.path = _config.data_dir / (
                     _config.prefix(self.first_block_time)
