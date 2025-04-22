@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from math import gcd
 
 import numpy as np
@@ -45,7 +46,7 @@ class Block:
         """resample the data to 16khz"""
         return resample_poly(data, self._resample_16khz_up, self._resample_16khz_down)
 
-    def __init__(self, data: np.ndarray, time: float) -> None:
+    def __init__(self, data: np.ndarray, time: float, clock: datetime) -> None:
         self.data: np.ndarray = data
         """
         audio data -- shape (block_size, channels)
@@ -57,7 +58,7 @@ class Block:
 
         self.time: float = time
         """
-        capture time
+        capture time -- stream time
         
         see
         - InputStream https://python-sounddevice.readthedocs.io/en/latest/api/streams.html#sounddevice.InputStream
@@ -65,9 +66,16 @@ class Block:
           - search`time.inputBufferAdcTime`
         - time https://python-sounddevice.readthedocs.io/en/latest/api/streams.html#sounddevice.Stream.time
         
-        > The current stream time in seconds.
-        
-        > The time values are monotonically increasing and have unspecified origin.
+        from the docs
+        - the current stream time in seconds
+        - the time values are monotonically increasing and have unspecified origin
+        """
+
+        self.clock: datetime = clock
+        """
+        capture time -- wall clock time
+
+        calculated from stream times and when the callback was called
         """
 
         self._yamnet_data: np.ndarray | None = None

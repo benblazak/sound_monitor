@@ -2,7 +2,7 @@ import logging
 import threading
 from collections import deque
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import numpy as np
 import sounddevice as sd
@@ -88,11 +88,21 @@ class Input(Singleton["Input"]):
         time,  # CData
         status: sd.CallbackFlags,
     ) -> None:
+
+        now = datetime.now()
+
         if status:
             _logger.warning(f"audio callback status: {status}")
 
         with self.buffer_lock:
-            self.buffer.append(data=Block(indata.copy(), time=time.inputBufferAdcTime))
+            self.buffer.append(
+                Block(
+                    data=indata.copy(),
+                    time=time.inputBufferAdcTime,
+                    clock=now
+                    - timedelta(seconds=time.currentTime - time.inputBufferAdcTime),
+                )
+            )
 
         with self._callbacks_lock:
             for c in self._callbacks.values():
