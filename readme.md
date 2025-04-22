@@ -45,3 +45,8 @@ see [mise tasks](./.mise.toml)
 - [odas](https://github.com/introlab/odas)
   - [configuration](https://github.com/introlab/odas/wiki/configuration)
     - [minidsp uma8](https://github.com/introlab/odas/blob/master/config/odaslive/minidsp.cfg)
+
+## TODO
+
+- [ ] when we switch to a new file around midnight
+  - [ ] grep for warnings and errors and such in the log, and email them
