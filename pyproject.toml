@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "sound_monitor"
 version = "0.1.0"
 description = "monitor sounds and record dog barks"
-requires-python = ">=3.11"
+requires-python = "3.12"
 license = { file = "license.md" }
 authors = [{ name = "Ben Blazak" }]
 dependencies = [
