@@ -17,7 +17,7 @@ _logger = logging.getLogger(__name__)
 
 class Input(Singleton["Input"]):
     blocks_per_second: int = 10
-    block_length: float = timedelta(seconds=1 / blocks_per_second)
+    block_length: float = 1 / blocks_per_second  # seconds
     block_size: int = _config.uma8_sample_rate // blocks_per_second
     buffer_size: int = _config.audio_buffer_seconds * blocks_per_second
 
@@ -92,7 +92,7 @@ class Input(Singleton["Input"]):
             _logger.warning(f"audio callback status: {status}")
 
         with self.buffer_lock:
-            self.buffer.append(Block(indata.copy(), time.inputBufferAdcTime))
+            self.buffer.append(data=Block(indata.copy(), time=time.inputBufferAdcTime))
 
         with self._callbacks_lock:
             for c in self._callbacks.values():
