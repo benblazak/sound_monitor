@@ -20,40 +20,51 @@ class Record:
     def __init__(self, name: str | None = None) -> None:
         self.name: str | None = name
         self.path: Path | None = None
-        self.time: datetime | None = None
-        self.first_block_time: datetime | None = None
-        self.last_block_time: datetime | None = None
+
+        self.waiting: bool = False
+        self.recording: bool = False
+        self.want_start_time: float | None = None  # stream time
+        self.want_stop_time: float | None = None  # stream time
+
+        self.start_time: float | None = None  # stream time
+        self.stop_time: float | None = None  # stream time
+        self.start_clock: datetime | None = None  # wall clock time
+        self.stop_clock: datetime | None = None  # wall clock time
 
         self._queue: Queue[Block] = Queue()
         self._thread: threading.Thread | None = None
         self._process: subprocess.Popen | None = None
+        self._last_block: Block | None = None
 
-    def start(self, time: datetime | None = None) -> Self:
-        if self._process is not None:
-            raise RuntimeError("already recording")
+    def start(self, time: float | None = None) -> Self:
+        if self.recording:
+            return
 
-        self.time = time or datetime.now()
-
+        self.want_start_time = time
         with _input.buffer_lock:
-            for block in _input.buffer:
-                self._queue.put(block)
+            if time:
+                # we have to filter blocks by time in _worker() (since time
+                # might be in the future) so enqueue all blocks here
+                for block in _input.buffer:
+                    self._queue.put(block)
 
-            _input.register_callback(
-                f"record-{id(self)}",
-                self._callback,
-            )
+            _input.register_callback(f"record-{id(self)}", self._callback)
 
         self._thread = threading.Thread(target=self._worker)
         self._thread.start()
 
+        self.waiting = True
+        self.recording = True
         return self
 
-    def stop(self, time: datetime | None = None) -> None:
-        if self._process is None:
+    def stop(self, time: float | None = None) -> Self:
+        if not self.recording:
             return
 
-        _input.remove_callback(f"record-{id(self)}")
-        self._queue.put(None)
+        if time:
+            self.want_stop_time = time
+        else:
+            self._queue.put(None)
         self._thread.join()
         self._process.stdin.close()
         ret = self._process.wait()
@@ -65,8 +76,7 @@ class Record:
             raise RuntimeError(f"ffmpeg exited with code {ret}")
 
         if time is not None:
-            # TODO get length from ffprobe in util.audio_length?
-            length = self.last_block_time + _input.block_length - self.first_block_time
+            length = self.last_block_time + _input.block_seconds - self.first_block_time
             trim_length = time - self.first_block_time
             if trim_length >= length:
                 _logger.warning(
@@ -101,6 +111,9 @@ class Record:
 
                 trim_path.rename(self.path)
 
+        self.recording = False
+        return self
+
     def _callback(self, input: Input) -> None:
         self._queue.put(input.buffer[-1])
 
@@ -109,26 +122,38 @@ class Record:
             block = self._queue.get()
 
             # signal to end
-            if block is None:
+            if block is None or (
+                self.want_stop_time and self.want_stop_time < block.time
+            ):
+                _input.remove_callback(f"record-{id(self)}")
+                while not self._queue.empty():
+                    self._queue.get()
+
+                self.stop_time = self._last_block.time + _input.block_seconds
+                self.stop_clock = self._last_block.clock + timedelta(
+                    seconds=_input.block_seconds
+                )
                 return
 
             # first block
-            if self.first_block_time is None:
-                # if early
-                if block.time < self.time:
-                    continue
+            if self.waiting:
+                if self.want_start_time:
+                    # if early
+                    if block.time <= (self.want_start_time - _input.block_seconds):
+                        continue
 
-                # if late
-                if block.time - self.time > _input.block_length * 1.5:
-                    _logger.warning(
-                        "recording starting late\n"
-                        f"  start: {block.time}\n"
-                        f"  start wanted: {self.time}"
-                    )
+                    # if late
+                    if block.time > self.want_start_time:
+                        _logger.warning(
+                            "recording starting late\n"
+                            f"  start: {block.time}\n"
+                            f"  start wanted: {self.want_start_time}"
+                        )
 
-                self.first_block_time = block.time
+                self.start_time = block.time
+                self.start_clock = block.clock
                 self.path = _config.data_dir / (
-                    _config.prefix(self.first_block_time)
+                    _config.prefix(self.start_clock)
                     + (f"_{self.name}" if self.name else "")
                     + ".mp3"
                 )
@@ -139,6 +164,8 @@ class Record:
                     stderr=subprocess.PIPE,
                 )
 
+                self.waiting = False
+
             # all blocks
-            self.last_block_time = block.time
+            self._last_block = block
             self._process.stdin.write(block.recording_data.tobytes())
