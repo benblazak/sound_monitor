@@ -6,10 +6,14 @@ _logger = logging.getLogger(__name__)
 try:
     from ben.mail import mail as _mail
 
+    available = True
+
     def mail(*, subject: str, body: str) -> None:
         _mail(subject=subject, body=body)
 
 except ImportError:
+
+    available = False
 
     def mail(*, subject: str, body: str) -> None:
         _logger.info(
