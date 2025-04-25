@@ -22,6 +22,7 @@ class Record:
         self.name: str | None = name
         self.path: Path | None = None
 
+        self.error: list[str] = []
         self.waiting: bool = False
         self.recording: bool = False
         self.want_start_time: float | None = None  # stream time
@@ -98,15 +99,21 @@ class Record:
                     if self._process:
                         ret = self._process.wait(timeout=5)
                 except subprocess.TimeoutExpired as e:
-                    _logger.error("ffmpeg failed to stop, sending SIGTERM")
+                    self.error.append("ffmpeg failed to stop, sending SIGTERM")
+                    _logger.error(self.error[-1])
                     self._process.terminate()
                     try:
                         ret = self._process.wait(timeout=5)
                     except subprocess.TimeoutExpired as e:
-                        _logger.error("ffmpeg failed to stop, sending SIGKILL")
+                        self.error.append("ffmpeg failed to stop, sending SIGKILL")
+                        _logger.error(self.error[-1])
                         self._process.kill()
                 if ret:
-                    _logger.error(f"ffmpeg exited with return code {ret}")
+                    self.error.append(
+                        f"ffmpeg exited with return code {ret}\n"
+                        + self._process.stderr.read().decode().strip().indent(2)
+                    )
+                    _logger.error(self.error[-1])
 
                 # if late
                 if (
@@ -119,7 +126,8 @@ class Record:
                             self.path, length=self.want_stop_time - self.start_time
                         )
                     except Exception as e:
-                        _logger.error(e)
+                        self.error.append(str(e))
+                        _logger.error(self.error[-1])
 
                 return
 
@@ -151,6 +159,13 @@ class Record:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
                 )
+                if self._process.stdin is None:
+                    self.error.append("ffmpeg: failed to open stdin")
+                    _logger.error(self.error[-1])
+                    self.waiting = False
+                    self.recording = False
+                    # TODO we should remove the callback, and do other cleanup too; which probably means we shoudl reorganize things. and might mean we shoudl simplify after all, and only allow start() and stop() to take past `time`s
+                    return
 
                 self.waiting = False
 
