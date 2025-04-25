@@ -8,6 +8,7 @@ from typing import Self
 
 from sound_monitor.audio.block import Block
 from sound_monitor.audio.input import Input
+from sound_monitor.audio.util import audio_trim
 from sound_monitor.config import Config
 
 _config = Config.get()
@@ -61,55 +62,10 @@ class Record:
         if not self.recording:
             return
 
-        if time:
-            self.want_stop_time = time
-        else:
+        self.want_stop_time = time
+        if not time:
             self._queue.put(None)
         self._thread.join()
-        self._process.stdin.close()
-        ret = self._process.wait()
-        if ret:
-            _logger.error(
-                f"ffmpeg exited with code {ret}\n"
-                + self._process.stderr.read().decode().indent(2)
-            )
-            raise RuntimeError(f"ffmpeg exited with code {ret}")
-
-        if time is not None:
-            length = self.last_block_time + _input.block_seconds - self.first_block_time
-            trim_length = time - self.first_block_time
-            if trim_length >= length:
-                _logger.warning(
-                    "cannot trim\n"
-                    f"  length: {length}\n"
-                    f"  length wanted: {trim_length}"
-                )
-                return
-            else:
-                trim_path = self.path.with_suffix(".tmp.mp3")
-                trim_process = subprocess.Popen(
-                    [
-                        "ffmpeg",
-                        "-i",
-                        str(self.path),
-                        "-t",
-                        str(trim_length.total_seconds()),
-                        "-c",
-                        "copy",  # stream copy to avoid re-encoding
-                        str(trim_path),
-                    ],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                )
-                ret = trim_process.wait()
-                if ret:
-                    trim_path.unlink()
-                    _logger.error(
-                        f"ffmpeg trim exited with code {ret}\n"
-                        + trim_process.stderr.read().decode().indent(2)
-                    )
-
-                trim_path.rename(self.path)
 
         self.recording = False
         return self
@@ -120,26 +76,58 @@ class Record:
     def _worker(self) -> None:
         while True:
             block = self._queue.get()
+            self._queue.task_done()
 
-            # signal to end
+            # last block
             if block is None or (
-                self.want_stop_time and self.want_stop_time < block.time
+                self.want_stop_time and block.time > self.want_stop_time
             ):
                 _input.remove_callback(f"record-{id(self)}")
                 while not self._queue.empty():
                     self._queue.get()
 
-                self.stop_time = self._last_block.time + _input.block_seconds
-                self.stop_clock = self._last_block.clock + timedelta(
-                    seconds=_input.block_seconds
-                )
+                if self._last_block:
+                    self.stop_time = self._last_block.time + _input.block_seconds
+                    self.stop_clock = self._last_block.clock + timedelta(
+                        seconds=_input.block_seconds
+                    )
+
+                self._process.stdin.close()
+                ret = 0
+                try:
+                    if self._process:
+                        ret = self._process.wait(timeout=5)
+                except subprocess.TimeoutExpired as e:
+                    _logger.error("ffmpeg failed to stop, sending SIGTERM")
+                    self._process.terminate()
+                    try:
+                        ret = self._process.wait(timeout=5)
+                    except subprocess.TimeoutExpired as e:
+                        _logger.error("ffmpeg failed to stop, sending SIGKILL")
+                        self._process.kill()
+                if ret:
+                    _logger.error(f"ffmpeg exited with return code {ret}")
+
+                # if late
+                if (
+                    self._last_block
+                    and self.want_stop_time
+                    and self._last_block.time > self.want_stop_time
+                ):
+                    try:
+                        audio_trim(
+                            self.path, length=self.want_stop_time - self.start_time
+                        )
+                    except Exception as e:
+                        _logger.error(e)
+
                 return
 
             # first block
             if self.waiting:
                 if self.want_start_time:
                     # if early
-                    if block.time <= (self.want_start_time - _input.block_seconds):
+                    if block.time <= self.want_start_time - _input.block_seconds:
                         continue
 
                     # if late

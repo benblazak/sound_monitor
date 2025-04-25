@@ -37,6 +37,7 @@ def audio_length(path: str | Path) -> float:
 
 def audio_trim(
     path: str | Path,
+    *,
     start: float | None = None,
     stop: float | None = None,
     length: float | None = None,
