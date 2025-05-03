@@ -94,10 +94,9 @@ class Block:
 
     @property
     def yamnet_data(self) -> np.ndarray:
-        """mono, filtered, resampled to 16khz"""
-        # TODO i might not want to filter this. or i might want to also run yamnet on unfiltered audio
+        """mono, resampled to 16khz"""
         if self._yamnet_data is None:
-            self._yamnet_data = self.resample_16khz(self.filter(self.mono_data))
+            self._yamnet_data = self.resample_16khz(self.mono_data)
         return self._yamnet_data
 
     @property
