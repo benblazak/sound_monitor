@@ -1,5 +1,6 @@
 import logging
 import threading
+import time
 from collections import deque
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -30,6 +31,20 @@ class Input(Singleton["Input"]):
         self.buffer: deque[Block] = deque(maxlen=self.buffer_size)
         self.buffer_lock = threading.Lock()
 
+    @property
+    def time(self) -> float | None:
+        with self.buffer_lock:
+            if len(self.buffer) == 0:
+                return None
+            return self.buffer[-1].time
+
+    @property
+    def clock(self) -> datetime | None:
+        with self.buffer_lock:
+            if len(self.buffer) == 0:
+                return None
+            return self.buffer[-1].clock
+
     def init(self) -> None:
         self.start()
 
@@ -51,6 +66,9 @@ class Input(Singleton["Input"]):
             blocksize=self.block_size,
         )
         self._stream.start()
+
+        while not len(self.buffer):
+            time.sleep(self.block_seconds / 2)
 
     def stop(self) -> None:
         if self._stream is None:

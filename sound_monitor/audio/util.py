@@ -69,9 +69,9 @@ def audio_trim(
             [
                 "ffmpeg",
                 *["-i", str(path)],
-                *(["-ss", start] if start is not None else []),
-                *(["-to", stop] if stop is not None else []),
-                *(["-t", length] if length is not None else []),
+                *(["-ss", str(start)] if start is not None else []),
+                *(["-to", str(stop)] if stop is not None else []),
+                *(["-t", str(length)] if length is not None else []),
                 *["-c", "copy"],  # stream copy to avoid re-encoding
                 str(trim_path),
             ],

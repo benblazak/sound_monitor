@@ -132,7 +132,7 @@ class Record:
                 seconds=_input.block_seconds
             )
 
-        if not self.path.exists():
+        if self.path and not self.path.exists():
             _logger.error(f"no recording at {self.path}")
 
         if time is not None:
