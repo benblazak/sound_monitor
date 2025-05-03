@@ -1,5 +1,6 @@
 import logging
 import subprocess
+import textwrap
 from pathlib import Path
 
 _logger = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ def audio_length(path: str | Path) -> float:
             check=True,
         )
     except subprocess.CalledProcessError as e:
-        _logger.error(f"{e}\n" + e.stderr.indent(2))
+        _logger.error(f"{e}\n" + textwrap.indent(e.stderr, "  "))
         raise
 
     duration = float(run.stdout.strip())
@@ -68,9 +69,9 @@ def audio_trim(
             [
                 "ffmpeg",
                 *["-i", str(path)],
-                *(["-ss", start] if start else []),
-                *(["-to", stop] if stop else []),
-                *(["-t", length] if stop else []),
+                *(["-ss", start] if start is not None else []),
+                *(["-to", stop] if stop is not None else []),
+                *(["-t", length] if length is not None else []),
                 *["-c", "copy"],  # stream copy to avoid re-encoding
                 str(trim_path),
             ],
@@ -80,7 +81,7 @@ def audio_trim(
             check=True,
         )
     except subprocess.CalledProcessError as e:
-        _logger.error(f"{e}\n" + e.stderr.indent(2))
+        _logger.error(f"{e}\n" + textwrap.indent(e.stderr, "  "))
         trim_path.unlink(missing_ok=True)
         raise
 

@@ -1,5 +1,6 @@
 import logging
 import subprocess
+import textwrap
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -38,12 +39,12 @@ class Record:
 
         self._queue = Queue()
         with _input.buffer_lock:
-            if not _input.buffer:
+            if len(_input.buffer) == 0:
                 self.stop()
                 raise RuntimeError("input buffer is empty")
 
             first_block = None
-            if time:
+            if time is not None:
                 for block in _input.buffer:
                     if block.time > time - _input.block_seconds:
                         self._queue.put(block)
@@ -57,7 +58,7 @@ class Record:
 
             _input.register_callback(f"record-{id(self)}", self._callback)
 
-        if time:
+        if time is not None:
             if first_block.time + _input.block_seconds < time:
                 _logger.warning(
                     "starting early\n"
@@ -98,22 +99,23 @@ class Record:
     def stop(self, time: float | None = None) -> Self:
         _input.remove_callback(f"record-{id(self)}")
 
-        if self._queue:
+        if self._queue is not None:
             self._queue.put(None)
 
-        if self._thread:
+        if self._thread is not None:
             self._thread.join(timeout=5)
             if self._thread.is_alive():
                 _logger.error("thread failed to stop")
 
-        if self._process:
+        if self._process is not None:
             self._process.stdin.close()
             try:
                 ret = self._process.wait(timeout=5)
                 if ret:
                     stderr = self._process.stderr.read().decode().strip()
                     _logger.error(
-                        f"ffmpeg exited with return code {ret}\n" + stderr.indent(2)
+                        f"ffmpeg exited with return code {ret}\n"
+                        + textwrap.indent(stderr, "  ")
                     )
             except subprocess.TimeoutExpired:
                 _logger.error("ffmpeg failed to stop, sending SIGTERM")
@@ -124,7 +126,7 @@ class Record:
                     _logger.error("ffmpeg failed to stop, sending SIGKILL")
                     self._process.kill()
 
-        if self._last_block:
+        if self._last_block is not None:
             self.stop_time = self._last_block.time + _input.block_seconds
             self.stop_clock = self._last_block.clock + timedelta(
                 seconds=_input.block_seconds
@@ -133,7 +135,7 @@ class Record:
         if not self.path.exists():
             _logger.error(f"no recording at {self.path}")
 
-        if time:
+        if time is not None:
             try:
                 if time < self.start_time:
                     _logger.warning(
@@ -168,7 +170,8 @@ class Record:
         return self
 
     def _callback(self, input: Input) -> None:
-        self._queue.put(input.buffer[-1])
+        if self._queue is not None:
+            self._queue.put(input.buffer[-1])
 
     def _worker(self) -> None:
         try:
