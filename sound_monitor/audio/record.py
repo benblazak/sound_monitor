@@ -7,8 +7,7 @@ from pathlib import Path
 from queue import Queue
 from typing import Self
 
-from sound_monitor.audio.block import Block
-from sound_monitor.audio.input import Input
+from sound_monitor.audio.input import Block, Input
 from sound_monitor.audio.util import audio_trim
 from sound_monitor.config import Config
 
