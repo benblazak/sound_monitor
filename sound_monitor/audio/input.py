@@ -17,7 +17,10 @@ _logger = logging.getLogger(__name__)
 
 
 class Input(Singleton["Input"]):
+
+    # other things depend on this, so it shouldn't be changed without care
     blocks_per_second: int = 10
+
     block_seconds: float = 1 / blocks_per_second
     block_size: int = _config.uma8_sample_rate // blocks_per_second
     buffer_size: int = _config.audio_buffer_seconds * blocks_per_second

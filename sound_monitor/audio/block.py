@@ -28,11 +28,10 @@ class Block:
         # resample to 16khz
         # - yamnet resample rate is 16khz
         # - eg up:down = 1:3 for 16k:48k
-        yamnet_rate = 16000  # yamnet requires 16khz input
         source_rate = _config.uma8_sample_rate
-        g = gcd(yamnet_rate, source_rate)
-
-        cls._resample_16khz_up = yamnet_rate // g
+        # ---
+        g = gcd(16000, source_rate)
+        cls._resample_16khz_up = 16000 // g
         cls._resample_16khz_down = source_rate // g
 
     def filter(self, data: np.ndarray) -> np.ndarray:
@@ -78,10 +77,6 @@ class Block:
         calculated from stream times and when the callback was called
         """
 
-        self._yamnet_data: np.ndarray | None = None
-        self._direction_data: np.ndarray | None = None
-        self._recording_data: np.ndarray | None = None
-
     @property
     def mono_data(self) -> np.ndarray:
         mono = _config.audio_mono_channel
@@ -93,25 +88,24 @@ class Block:
         return self.data[:, [left, right]]
 
     @property
+    def recording_data(self) -> np.ndarray:
+        """just extract the stereo channels"""
+        return self.stereo_data
+
+    @property
     def yamnet_data(self) -> np.ndarray:
         """mono, resampled to 16khz"""
-        if self._yamnet_data is None:
-            self._yamnet_data = self.resample_16khz(self.mono_data)
-        return self._yamnet_data
+        return self.resample_16khz(self.mono_data)
+
+    @property
+    def peak_data(self) -> np.ndarray:
+        """mono, filtered"""
+        return self.filter(self.mono_data)
 
     @property
     def direction_data(self) -> np.ndarray:
         """all channels, filtered"""
-        if self._direction_data is None:
-            self._direction_data = self.filter(self.data)
-        return self._direction_data
-
-    @property
-    def recording_data(self) -> np.ndarray:
-        """just extract the stereo channels"""
-        if self._recording_data is None:
-            self._recording_data = self.stereo_data
-        return self._recording_data
+        return self.filter(self.data)
 
 
 Block._init_cls()

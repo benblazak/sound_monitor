@@ -39,7 +39,7 @@ class Config(Singleton["Config"]):
     def yamnet_class_map(self) -> Path:
         return self.yamnet_dir / "yamnet_class_map.csv"
 
-    audio_buffer_seconds: int = 30
+    audio_buffer_seconds: int = 10
     audio_mono_channel: int = 0  # center - see uma8_mic_positions
     audio_stereo_channels: tuple[int, int] = (
         1,
