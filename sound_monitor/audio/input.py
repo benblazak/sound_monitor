@@ -48,12 +48,6 @@ class Input(Singleton["Input"]):
                 return None
             return self.buffer[-1].clock
 
-    def init(self) -> None:
-        self.start()
-
-    def cleanup(self) -> None:
-        self.stop()
-
     def start(self) -> None:
         if self._stream is not None:
             return
