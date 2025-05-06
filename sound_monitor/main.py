@@ -1,4 +1,5 @@
 import logging
+import time
 
 from sound_monitor.audio.input import Input
 from sound_monitor.audio.record import Record
@@ -16,3 +17,5 @@ _input = Input.get()
 def main():
     _config.init()
     _input.init()
+
+    import sound_monitor.audio.yamnet as yamnet
