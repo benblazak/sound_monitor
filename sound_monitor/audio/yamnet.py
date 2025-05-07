@@ -1,53 +1,181 @@
-# TODO
-
 import csv
 import logging
-from pprint import pprint
+import threading
+from collections import deque
+from collections.abc import Callable
+from datetime import datetime
+from queue import Queue
 
 import numpy as np
 from ai_edge_litert.interpreter import Interpreter
 
+from sound_monitor.audio.input import Block, Input
 from sound_monitor.config import Config
+from sound_monitor.util.types.singleton import Singleton
 
 _config = Config.get()
 _logger = logging.getLogger(__name__)
 
-interpreter = Interpreter(model_path=str(_config.yamnet_model))
-
-input_details = interpreter.get_input_details()
-waveform_input_index = input_details[0]["index"]
-output_details = interpreter.get_output_details()
-scores_output_index = output_details[0]["index"]
-
-length = 0.96 # seconds
-waveform = np.zeros(int(length * 16000), dtype=np.float32)
-# - 0.96 second window
-# - 0.48 second hop
-# - last window might be padded
-# ---
-# - 1s gives two windows
-# - 0.96s gives one window
-
-interpreter.resize_tensor_input(waveform_input_index, [len(waveform)], strict=True)
-interpreter.allocate_tensors()
-interpreter.set_tensor(waveform_input_index, waveform)
-interpreter.invoke()
-
-scores: np.ndarray[np.float32] = interpreter.get_tensor(scores_output_index)
-print(scores.shape)
+_input = Input.get()
 
 
-def class_names_from_csv(csv_file_path):
-    """Returns list of class names from a CSV file."""
-    with open(csv_file_path) as f:
-        reader = csv.reader(f)
-        next(reader)  # skip header
-        return [row[2] for row in reader]
+class _Block:
+    def __init__(self, data: list[Block]):
+        self.data = np.concatenate([block.yamnet_data.reshape(-1) for block in data])
+        self.time = data[0].time
+        self.clock = data[0].clock
 
 
-class_names = class_names_from_csv(_config.yamnet_class_map)
-print(class_names[scores.mean(axis=0).argmax()])  # Should print 'Silence'.
+class Scores:
+    @classmethod
+    def _init_cls(cls) -> None:
+        with open(_config.yamnet_class_map) as file:
+            reader = csv.reader(file)
+            next(reader)  # skip header
 
-means = scores.mean(axis=0)
-pairs = [(x, y) for x, y in sorted(zip(means, class_names)) if x > 0]
-pprint(pairs)
+            cls._class_names = [row[2] for row in reader]
+
+    def __init__(self, data: np.ndarray, time: float, clock: datetime) -> None:
+        self.data: np.ndarray = data
+        self.time: float = time
+        self.clock: datetime = clock
+
+
+Scores._init_cls()
+
+
+class YAMNet(Singleton["YAMNet"]):
+    if Input.blocks_per_second != 10:
+        raise ValueError("YAMNet depends on 0.1s blocks")
+
+    sample_rate = 16000  # native is 16khz
+    window_seconds = 0.96  # native is 0.96s
+    hop_seconds = 0.5  # native is 0.48s, but we need to align with Input blocks
+
+    window_samples = int(window_seconds * sample_rate)
+    hop_samples = int(hop_seconds * sample_rate)
+    buffer_samples = sample_rate  # 1s buffer
+    input_interval = int(hop_seconds * _input.blocks_per_second)
+
+    def __init__(self) -> None:
+        self._interpreter = Interpreter(model_path=str(_config.yamnet_model))
+
+        input_details = self._interpreter.get_input_details()
+        output_details = self._interpreter.get_output_details()
+
+        self._waveform_input_index = input_details[0]["index"]
+        self._scores_output_index = output_details[0]["index"]
+
+        self._interpreter.resize_tensor_input(
+            self._waveform_input_index,
+            [self.window_samples],
+            strict=True,
+        )
+        self._interpreter.allocate_tensors()
+
+        self._callbacks: dict[str, dict] = {}
+        self._callbacks_lock = threading.Lock()
+
+        self._scores: deque[Scores] = deque(maxlen=2)
+        self._scores_lock = threading.Lock()
+
+        self._queue: Queue[_Block] | None = None
+        self._thread: threading.Thread | None = None
+        self._last_block: _Block | None = None
+
+    def start(self) -> None:
+        if self._queue is not None:
+            return
+        self._queue = Queue()
+
+        _input.register_callback(
+            f"yamnet-{id(self)}",
+            self._callback,
+            interval=self.input_interval,
+        )
+
+        self._thread = threading.Thread(target=self._worker)
+        self._thread.start()
+
+    def stop(self) -> None:
+        _input.remove_callback(f"yamnet-{id(self)}")
+
+        if self._queue is not None:
+            self._queue.put(None)
+
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                _logger.error("thread failed to stop")
+
+        self._queue = None
+        self._thread = None
+        self._last_block = None
+
+    def register_callback(
+        self,
+        name: str,
+        callback: Callable[["YAMNet"], None],
+    ) -> None:
+        with self._callbacks_lock:
+            self._callbacks[name] = {
+                "callback": callback,
+            }
+
+    def remove_callback(self, name: str) -> None:
+        with self._callbacks_lock:
+            if name in self._callbacks:
+                del self._callbacks[name]
+
+    def _callback(self, input: Input) -> None:
+        if self._queue is not None:
+            blocks: list[Block] = input.buffer[-self.input_interval :]
+            self._queue.put(_Block(blocks))
+
+    def _worker(self) -> None:
+        try:
+            while True:
+                block = self._queue.get()
+                self._queue.task_done()
+
+                if block is None:
+                    return
+
+                if self._last_block is None:
+                    self._last_block = block
+                    continue
+
+                data = self._last_block.data + block.data
+                time = self._last_block.time
+                clock = self._last_block.clock
+
+                self._interpreter.set_tensor(
+                    self._waveform_input_index,
+                    data,
+                )
+                self._interpreter.invoke()
+
+                scores = self._interpreter.get_tensor(self._scores_output_index)
+
+                # TODO not sure this is right
+                # TODO not quite sure what i want to do here either
+
+                with self._scores_lock:
+                    self._scores.append(
+                        Scores(
+                            data=scores,
+                            time=time,
+                            clock=clock,
+                        )
+                    )
+
+                callbacks = []
+                with self._callbacks_lock:
+                    for c in self._callbacks.values():
+                        callbacks.append(c)
+                for c in callbacks:
+                    c["callback"](yamnet=self)
+
+        except Exception as e:
+            _logger.error(f"error in worker: {e}")
+            self.stop()

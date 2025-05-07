@@ -237,6 +237,5 @@ class Input(Singleton["Input"]):
                 if c["next_call"] <= 0:
                     callbacks.append(c)
                     c["next_call"] = c["interval"]
-
         for c in callbacks:
             c["callback"](input=self)
