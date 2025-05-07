@@ -185,6 +185,13 @@ class Input(Singleton["Input"]):
         *,
         interval: int = 1,  # blocks
     ) -> None:
+        """
+        register a callback
+
+        notes:
+        - the buffer won't be modified while the callbacks are running, so don't
+          hold the buffer lock (or modify the buffer) (just read from it)
+        """
         with self._callbacks_lock:
             self._callbacks[name] = {
                 "callback": callback,
@@ -193,6 +200,9 @@ class Input(Singleton["Input"]):
             }
 
     def remove_callback(self, name: str) -> None:
+        """
+        remove a callback
+        """
         with self._callbacks_lock:
             if name in self._callbacks:
                 del self._callbacks[name]
@@ -220,9 +230,13 @@ class Input(Singleton["Input"]):
                 )
             )
 
+        callbacks = []
         with self._callbacks_lock:
             for c in self._callbacks.values():
                 c["next_call"] -= 1
                 if c["next_call"] <= 0:
-                    c["callback"](input=self)
+                    callbacks.append(c)
                     c["next_call"] = c["interval"]
+
+        for c in callbacks:
+            c["callback"](input=self)
