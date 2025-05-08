@@ -34,7 +34,7 @@ class Scores:
             reader = csv.reader(file)
             next(reader)  # skip header
 
-            cls._class_names = [row[2] for row in reader]
+            cls.class_names = [row[2] for row in reader]
 
     @classmethod
     def max(cls, *scores: Self) -> Self:
