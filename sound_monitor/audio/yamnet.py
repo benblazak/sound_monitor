@@ -30,6 +30,7 @@ class _Block:
 class Scores:
     @staticmethod
     def _get_class_names() -> list[str]:
+        """get class names from yamnet class map"""
         with open(_config.yamnet_class_map, encoding="utf-8") as file:
             reader = csv.reader(file)
             next(reader)  # skip header

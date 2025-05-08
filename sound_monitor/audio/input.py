@@ -21,7 +21,7 @@ _logger = logging.getLogger(__name__)
 class Block:
     @staticmethod
     def _get_filter_sos() -> np.ndarray:
-        """bandpass filter"""
+        """for bandpass filter"""
         nyquist = _config.uma8_sample_rate / 2
         low, high = _config.audio_bandpass_filter
 
@@ -35,7 +35,8 @@ class Block:
     @staticmethod
     def _get_resample_16khz() -> tuple[int, int]:
         """
-        resample to 16khz
+        for resampling to 16khz
+
         - yamnet resample rate is 16khz
         - eg up:down = 1:3 for 16k:48k
         """
