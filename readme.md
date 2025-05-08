@@ -50,3 +50,4 @@ see [mise tasks](./.mise.toml)
 
 - [ ] when we switch to a new file around midnight
   - [ ] grep for warnings and errors and such in the log, and email them
+- [ ] recording in stereo might not turn out to be useful. if not we can switch to mono

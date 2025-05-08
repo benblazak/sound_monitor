@@ -1,11 +1,9 @@
 import csv
-import itertools
 import logging
 import threading
 from collections import deque
 from collections.abc import Callable
 from datetime import datetime
-from pprint import pp, pprint
 from queue import Queue
 from typing import Self
 

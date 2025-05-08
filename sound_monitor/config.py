@@ -3,7 +3,6 @@ import sys
 import sysconfig
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import sounddevice as sd
@@ -39,14 +38,14 @@ class Config(Singleton["Config"]):
     def yamnet_class_map(self) -> Path:
         return self.yamnet_dir / "yamnet_class_map.csv"
 
-    audio_buffer_seconds: int = 10
+    audio_gain_factor: float = 100.0  # multiplier
+    audio_bandpass_filter: tuple[float, float] = (400, 4000)  # hz
     audio_mono_channel: int = 0  # center - see uma8_mic_positions
     audio_stereo_channels: tuple[int, int] = (
         1,
         4,
     )  # L and R facing away from my house - see uma8_mic_positions
-    audio_bandpass_filter: tuple[float, float] = (400, 4000)  # hz
-    audio_gain_factor: float = 100.0  # multiplier
+    audio_buffer_seconds: int = 10
 
     direction_azimuth_offset: int = -90
     """
