@@ -71,16 +71,6 @@ class Scores:
         self.time: float = time
         self.clock: datetime = clock
 
-        # TODO
-        def print_top_n(self, n: int = 5) -> None:
-            indices = np.argsort(self.data)[-n:][::-1]
-            for i in indices:
-                print(f"{self.data[i]:.3f} - {Scores._class_names[i]}")
-            print()
-
-        print_top_n(self)
-
-
 
 Scores._init_cls()
 
