@@ -61,14 +61,25 @@ class Scores:
     def __init__(self, data: np.ndarray, time: float, clock: datetime) -> None:
         self.data: np.ndarray = data
         """
-        scores -- float32, shape (512)
+        scores -- float32, shape (512,)
+
+        values are between 0 and 1, representing confidence scores for each class
 
         https://www.kaggle.com/models/google/yamnet/tfLite/tflite
         """
-        pp(data)  # TODO
 
         self.time: float = time
         self.clock: datetime = clock
+
+        # TODO
+        def print_top_n(self, n: int = 5) -> None:
+            indices = np.argsort(self.data)[-n:][::-1]
+            for i in indices:
+                print(f"{self.data[i]:.3f} - {Scores._class_names[i]}")
+            print()
+
+        print_top_n(self)
+
 
 
 Scores._init_cls()
@@ -238,7 +249,10 @@ class YAMNet(Singleton["YAMNet"]):
                 )
                 self._interpreter.invoke()
 
-                scores = self._interpreter.get_tensor(self._scores_output_index)
+                scores: np.ndarray = self._interpreter.get_tensor(
+                    self._scores_output_index
+                )
+                scores = scores.reshape(-1)  # reshape from (1, 512) to (512,)
 
                 with self._scores_lock:
                     self._scores.append(
