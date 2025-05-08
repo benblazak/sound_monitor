@@ -28,13 +28,14 @@ class _Block:
 
 
 class Scores:
-    @classmethod
-    def _init_cls(cls) -> None:
-        with open(_config.yamnet_class_map) as file:
+    @staticmethod
+    def _get_class_names() -> list[str]:
+        with open(_config.yamnet_class_map, encoding="utf-8") as file:
             reader = csv.reader(file)
             next(reader)  # skip header
+            return [row[2] for row in reader]
 
-            cls.class_names = [row[2] for row in reader]
+    class_names = _get_class_names()
 
     @classmethod
     def max(cls, *scores: Self) -> Self:
@@ -68,9 +69,6 @@ class Scores:
 
         self.time: float = time
         self.clock: datetime = clock
-
-
-Scores._init_cls()
 
 
 class YAMNet(Singleton["YAMNet"]):

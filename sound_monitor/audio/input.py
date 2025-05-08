@@ -19,27 +19,37 @@ _logger = logging.getLogger(__name__)
 
 
 class Block:
-    @classmethod
-    def _init_cls(cls) -> None:
-        # bandpass filter
+    @staticmethod
+    def _get_filter_sos() -> np.ndarray:
+        """bandpass filter"""
         nyquist = _config.uma8_sample_rate / 2
         low, high = _config.audio_bandpass_filter
 
-        cls._filter_sos = butter(
+        return butter(
             4,  # filter order
             [low / nyquist, high / nyquist],
             btype="band",
             output="sos",
         )
 
-        # resample to 16khz
-        # - yamnet resample rate is 16khz
-        # - eg up:down = 1:3 for 16k:48k
+    @staticmethod
+    def _get_resample_16khz() -> tuple[int, int]:
+        """
+        resample to 16khz
+        - yamnet resample rate is 16khz
+        - eg up:down = 1:3 for 16k:48k
+        """
         source_rate = _config.uma8_sample_rate
         # ---
         g = gcd(16000, source_rate)
-        cls._resample_16khz_up = 16000 // g
-        cls._resample_16khz_down = source_rate // g
+
+        resample_16khz_up = 16000 // g
+        resample_16khz_down = source_rate // g
+
+        return resample_16khz_up, resample_16khz_down
+
+    _filter_sos: np.ndarray = _get_filter_sos()
+    _resample_16khz_up, _resample_16khz_down = _get_resample_16khz()
 
     def gain(self, data: np.ndarray, gain_factor: float) -> np.ndarray:
         """apply gain to audio data (with clipping to prevent distortion)"""
@@ -125,9 +135,6 @@ class Block:
     def direction_data(self) -> np.ndarray:
         """all channels, filtered"""
         return self.filter(self.gain_data)
-
-
-Block._init_cls()
 
 
 class Input(Singleton["Input"]):
