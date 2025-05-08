@@ -46,6 +46,7 @@ class Config(Singleton["Config"]):
         4,
     )  # L and R facing away from my house - see uma8_mic_positions
     audio_bandpass_filter: tuple[float, float] = (400, 4000)  # hz
+    audio_gain_factor: float = 100.0  # multiplier
 
     direction_azimuth_offset: int = -90
     """
@@ -135,7 +136,7 @@ class Config(Singleton["Config"]):
             "equalizer=f=80:width_type=h:width=200:g=4,"  # bass
             "equalizer=f=2500:width_type=q:width=1:g=-2,"  # presence
             "equalizer=f=8000:width_type=h:width=2000:g=-3,"  # treble
-            "volume=100.0",
+            "volume=1.0",  # see audio_gain_factor
             *["-c:a", "libmp3lame", "-q:a", "2"],  # mp3, vbr quality 2
         ]
 

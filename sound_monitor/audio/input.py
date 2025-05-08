@@ -41,6 +41,10 @@ class Block:
         cls._resample_16khz_up = 16000 // g
         cls._resample_16khz_down = source_rate // g
 
+    def gain(self, data: np.ndarray, gain_factor: float) -> np.ndarray:
+        """apply gain to audio data (with clipping to prevent distortion)"""
+        return np.clip(data * gain_factor, -1.0, 1.0)
+
     def filter(self, data: np.ndarray) -> np.ndarray:
         """bandpass filter all channels"""
         filtered = np.zeros_like(data)
@@ -84,15 +88,23 @@ class Block:
         calculated from stream times and when the callback was called
         """
 
+        self._gain_data: np.ndarray | None = None
+
+    @property
+    def gain_data(self) -> np.ndarray:
+        if self._gain_data is None:
+            self._gain_data = self.gain(self.data, _config.audio_gain_factor)
+        return self._gain_data
+
     @property
     def mono_data(self) -> np.ndarray:
         mono = _config.audio_mono_channel
-        return self.data[:, [mono]]
+        return self.gain_data[:, [mono]]
 
     @property
     def stereo_data(self) -> np.ndarray:
         left, right = _config.audio_stereo_channels
-        return self.data[:, [left, right]]
+        return self.gain_data[:, [left, right]]
 
     @property
     def recording_data(self) -> np.ndarray:
@@ -112,7 +124,7 @@ class Block:
     @property
     def direction_data(self) -> np.ndarray:
         """all channels, filtered"""
-        return self.filter(self.data)
+        return self.filter(self.gain_data)
 
 
 Block._init_cls()
