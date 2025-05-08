@@ -52,7 +52,7 @@ class Record:
             # if no time
             # if no block found (time is in the future)
             if first_block is None:
-                first_block = _input.buffer[-1]
+                first_block = _input.last_block
                 self._queue.put(first_block)
 
             _input.register_callback(f"record-{id(self)}", self._callback)
@@ -170,7 +170,7 @@ class Record:
 
     def _callback(self, input: Input) -> None:
         if self._queue is not None:
-            self._queue.put(input.buffer[-1])
+            self._queue.put(input.last_block)
 
     def _worker(self) -> None:
         try:

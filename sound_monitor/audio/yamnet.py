@@ -1,10 +1,13 @@
 import csv
+import itertools
 import logging
 import threading
 from collections import deque
 from collections.abc import Callable
 from datetime import datetime
+from pprint import pp, pprint
 from queue import Queue
+from typing import Self
 
 import numpy as np
 from ai_edge_litert.interpreter import Interpreter
@@ -20,7 +23,7 @@ _input = Input.get()
 
 
 class _Block:
-    def __init__(self, data: list[Block]):
+    def __init__(self, data: deque[Block]):
         self.data = np.concatenate([block.yamnet_data.reshape(-1) for block in data])
         self.time = data[0].time
         self.clock = data[0].clock
@@ -35,8 +38,35 @@ class Scores:
 
             cls._class_names = [row[2] for row in reader]
 
+    @classmethod
+    def max(cls, *scores: Self) -> Self:
+        "max scores -- time and clock are from the first score"
+        data = np.max([score.data for score in scores], axis=0)
+        return cls(
+            data=data,
+            time=scores[0].time,
+            clock=scores[0].clock,
+        )
+
+    @classmethod
+    def mean(cls, *scores: Self) -> Self:
+        "mean scores -- time and clock are from the first score"
+        data = np.mean([score.data for score in scores], axis=0)
+        return cls(
+            data=data,
+            time=scores[0].time,
+            clock=scores[0].clock,
+        )
+
     def __init__(self, data: np.ndarray, time: float, clock: datetime) -> None:
         self.data: np.ndarray = data
+        """
+        scores -- float32, shape (512)
+
+        https://www.kaggle.com/models/google/yamnet/tfLite/tflite
+        """
+        pp(data)  # TODO
+
         self.time: float = time
         self.clock: datetime = clock
 
@@ -48,8 +78,8 @@ class YAMNet(Singleton["YAMNet"]):
     if Input.blocks_per_second != 10:
         raise ValueError("YAMNet depends on 0.1s blocks")
 
-    sample_rate = 16000  # native is 16khz
-    window_seconds = 0.96  # native is 0.96s
+    sample_rate = 16000  # native
+    window_seconds = 0.96  # native
     hop_seconds = 0.5  # native is 0.48s, but we need to align with Input blocks
 
     window_samples = int(window_seconds * sample_rate)
@@ -76,12 +106,63 @@ class YAMNet(Singleton["YAMNet"]):
         self._callbacks: dict[str, dict] = {}
         self._callbacks_lock = threading.Lock()
 
+        # lock for writes (in this file), or to (very quickly) pause writes
         self._scores: deque[Scores] = deque(maxlen=2)
         self._scores_lock = threading.Lock()
 
         self._queue: Queue[_Block] | None = None
         self._thread: threading.Thread | None = None
         self._last_block: _Block | None = None
+
+    @property
+    def time(self) -> float:
+        return self._scores[-1].time
+
+    @property
+    def clock(self) -> datetime:
+        return self._scores[-1].clock
+
+    @property
+    def scores(self) -> Scores:
+        """
+        latest scores
+
+        covering `time` to `time + 1s`
+
+        actually from `time` to `time + 0.96s`, but we'll treat it like a full
+        second
+        """
+        return self._scores[-1]
+
+    @property
+    def scores_max(self) -> Scores:
+        """ "
+        max scores
+
+        covering `time` to `time + 0.5s`
+
+        actually from `time` to `time + 0.46s`, but we'll treat it like a full
+        half second
+
+        each window overlaps with the previous window by about 0.5s. this is the
+        max of the scores for the two windows that overlap from `time` to
+        `time + 0.5s`
+        """
+        return Scores.max(*reversed(self._scores))
+
+    @property
+    def scores_mean(self) -> Scores:
+        """
+        mean scores
+
+        actually from `time` to `time + 0.46s`, but we'll treat it like a full
+        half second
+
+        each window overlaps with the previous window by about 0.5s. this is the
+        mean of the scores for the two windows that overlap from `time` to
+        `time + 0.5s`
+        """
+        return Scores.mean(*reversed(self._scores))
 
     def start(self) -> None:
         if self._queue is not None:
@@ -129,7 +210,7 @@ class YAMNet(Singleton["YAMNet"]):
 
     def _callback(self, input: Input) -> None:
         if self._queue is not None:
-            blocks: list[Block] = input.buffer[-self.input_interval :]
+            blocks = input.last_blocks(self.input_interval)
             self._queue.put(_Block(blocks))
 
     def _worker(self) -> None:
@@ -145,7 +226,9 @@ class YAMNet(Singleton["YAMNet"]):
                     self._last_block = block
                     continue
 
-                data = self._last_block.data + block.data
+                data = np.concatenate([self._last_block.data, block.data])[
+                    : self.window_samples
+                ]
                 time = self._last_block.time
                 clock = self._last_block.clock
 
@@ -156,9 +239,6 @@ class YAMNet(Singleton["YAMNet"]):
                 self._interpreter.invoke()
 
                 scores = self._interpreter.get_tensor(self._scores_output_index)
-
-                # TODO not sure this is right
-                # TODO not quite sure what i want to do here either
 
                 with self._scores_lock:
                     self._scores.append(

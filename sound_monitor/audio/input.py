@@ -1,3 +1,4 @@
+import itertools
 import logging
 import threading
 import time
@@ -132,22 +133,26 @@ class Input(Singleton["Input"]):
         self._callbacks: dict[str, dict] = {}
         self._callbacks_lock = threading.Lock()
 
+        # lock for writes (in this file), or to (very quickly) pause writes
         self.buffer: deque[Block] = deque(maxlen=self.buffer_size)
         self.buffer_lock = threading.Lock()
 
     @property
-    def time(self) -> float | None:
-        with self.buffer_lock:
-            if len(self.buffer) == 0:
-                return None
-            return self.buffer[-1].time
+    def time(self) -> float:
+        return self.buffer[-1].time
 
     @property
-    def clock(self) -> datetime | None:
-        with self.buffer_lock:
-            if len(self.buffer) == 0:
-                return None
-            return self.buffer[-1].clock
+    def clock(self) -> datetime:
+        return self.buffer[-1].clock
+
+    @property
+    def last_block(self) -> Block:
+        return self.buffer[-1]
+
+    def last_blocks(self, stop: int) -> deque[Block]:
+        blocks = deque(itertools.islice(reversed(self.buffer), stop))
+        blocks.reverse()
+        return blocks
 
     def start(self) -> None:
         if self._stream is not None:
