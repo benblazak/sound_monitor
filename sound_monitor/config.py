@@ -115,6 +115,7 @@ class Config(Singleton["Config"]):
                 and device["max_input_channels"] == 8
             ):
                 return i
+        return None
 
     @property
     def record_ffmpeg_command_partial(self) -> list[str]:

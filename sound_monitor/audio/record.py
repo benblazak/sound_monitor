@@ -80,6 +80,7 @@ class Record:
             + ".mp3"
         )
 
+        # pylint: disable=consider-using-with
         self._process = subprocess.Popen(
             _config.record_ffmpeg_command_partial + [self.path],
             stdin=subprocess.PIPE,
@@ -89,6 +90,7 @@ class Record:
         if self._process.poll() is not None:
             self.stop()
             raise RuntimeError("ffmpeg failed to start")
+        # pylint: enable=consider-using-with
 
         self._thread = threading.Thread(target=self._worker)
         self._thread.start()

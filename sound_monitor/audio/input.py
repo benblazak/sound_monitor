@@ -190,7 +190,7 @@ class Input(Singleton["Input"]):
         )
         self._stream.start()
 
-        while not len(self.buffer):
+        while len(self.buffer) == 0:
             time.sleep(self.block_seconds / 2)
 
     def stop(self) -> None:

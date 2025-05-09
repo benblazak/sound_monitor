@@ -1,18 +1,24 @@
-[MESSAGES CONTROL]
+[messages control]
+
 disable=
     missing-module-docstring,
     missing-class-docstring,
     missing-function-docstring,
-    
-    line-too-long,
-    too-many-arguments,
-    too-many-locals,
-    too-many-instance-attributes,
-    too-few-public-methods,
+
     broad-except,
-    invalid-name,
-    no-else-return,
-    unused-argument,
+    duplicate-code,
     import-error,
-    redefined-outer-name,
+    invalid-name,
+    line-too-long,
+    logging-fstring-interpolation,
+    logging-not-lazy,
+    no-else-return,
     redefined-builtin,
+    redefined-outer-name,
+    too-few-public-methods,
+    too-many-arguments,
+    too-many-branches,
+    too-many-instance-attributes,
+    too-many-locals,
+    unused-argument,
+
