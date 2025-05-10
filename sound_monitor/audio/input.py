@@ -193,6 +193,7 @@ class Input(Singleton["Input"]):
         while len(self.buffer) == 0:
             time.sleep(self.block_seconds / 2)
 
+    # TODO make this consistent with how i clean up in record and yamnet
     def stop(self) -> None:
         if self._stream is None:
             return
