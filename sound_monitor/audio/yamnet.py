@@ -222,6 +222,32 @@ class YAMNet(Singleton["YAMNet"]):
 
                 if self._last_block is None:
                     self._last_block = block
+                    # TODO i never update this lol
+
+                    # TODO i might want to change this logic though.
+                    #
+                    # i feel like _Block should be a thing that's processed by
+                    # worker. which would mean that _callback needs to keep
+                    # track of incoming blocks and group them into _Block's
+                    # appropriately. it might be good in that case to change how
+                    # callbacks work, so that a subscriber can have an initial
+                    # number of blocks, and a subsequent number of blocks. or
+                    # else can have all blocks, possibly with a filter... or
+                    # else a "past seconds" or "after time".
+                    #
+                    # actually, we could call the callback parameters window and
+                    # hop. and we could send the callback function `window`
+                    # blocks, every `hop` new blocks.
+                    #
+                    # and then we could handle past blocks somehow. maybe with a
+                    # `start_time` callback parameter, that could be stream
+                    # time. dunno if we also want to have `start_offset`
+                    #
+                    # callbacks will need to receive an `error` parameter too
+                    # then, if they specify a start.
+                    #
+                    # in this case, we don't need a _Block at all actually, we
+                    # can just put deque's of Block's into the queue
                     continue
 
                 data = np.concatenate([self._last_block.data, block.data])[
