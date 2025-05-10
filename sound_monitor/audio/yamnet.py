@@ -248,6 +248,9 @@ class YAMNet(Singleton["YAMNet"]):
                     #
                     # in this case, we don't need a _Block at all actually, we
                     # can just put deque's of Block's into the queue
+                    #
+                    # while we're at it, we should think about how to pass
+                    # errors back from worker threads too, maybe
                     continue
 
                 data = np.concatenate([self._last_block.data, block.data])[
