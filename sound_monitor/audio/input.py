@@ -49,7 +49,7 @@ class Block:
 
         return resample_16khz_up, resample_16khz_down
 
-    _filter_sos: np.ndarray = _get_filter_sos()
+    _filter_sos = _get_filter_sos()
     _resample_16khz_up, _resample_16khz_down = _get_resample_16khz()
 
     def gain(self, data: np.ndarray, gain_factor: float) -> np.ndarray:
@@ -100,6 +100,8 @@ class Block:
         """
 
         self._gain_data: np.ndarray | None = None
+        self._yamnet_data: np.ndarray | None = None
+        self._peak_data: np.ndarray | None = None
 
     @property
     def gain_data(self) -> np.ndarray:
@@ -125,12 +127,16 @@ class Block:
     @property
     def yamnet_data(self) -> np.ndarray:
         """mono, resampled to 16khz"""
-        return self.resample_16khz(self.mono_data)
+        if self._yamnet_data is None:
+            self._yamnet_data = self.resample_16khz(self.mono_data)
+        return self._yamnet_data
 
     @property
     def peak_data(self) -> np.ndarray:
         """mono, filtered"""
-        return self.filter(self.mono_data)
+        if self._peak_data is None:
+            self._peak_data = self.filter(self.mono_data)
+        return self._peak_data
 
     @property
     def direction_data(self) -> np.ndarray:
@@ -153,32 +159,30 @@ class Input(Singleton["Input"]):
         self._callbacks: dict[str, dict] = {}
         self._callbacks_lock = threading.Lock()
 
-        # lock for writes (in this file), or to (very quickly) pause writes
-        self.buffer: deque[Block] = deque(maxlen=self.buffer_size)
-        self.buffer_lock = threading.Lock()
+        self._buffer: deque[Block] = deque(maxlen=self.buffer_size)
+        self._buffer_lock = threading.Lock()
 
     @property
-    def time(self) -> float:
-        return self.buffer[-1].time
+    def time(self) -> float | None:
+        if len(self._buffer) == 0:
+            return None
+        return self._buffer[-1].time
 
     @property
-    def clock(self) -> datetime:
-        return self.buffer[-1].clock
-
-    @property
-    def last_block(self) -> Block:
-        return self.buffer[-1]
-
-    def last_blocks(self, stop: int) -> deque[Block]:
-        blocks = deque(itertools.islice(reversed(self.buffer), stop))
-        blocks.reverse()
-        return blocks
+    def clock(self) -> datetime | None:
+        if len(self._buffer) == 0:
+            return None
+        return self._buffer[-1].clock
 
     def start(self) -> None:
         if self._stream is not None:
             return
 
-        _logger.debug("starting")
+        with self._callbacks_lock:
+            self._callbacks.clear()
+
+        with self._buffer_lock:
+            self._buffer.clear()
 
         self._stream = sd.InputStream(
             device=_config.uma8_device_id,
@@ -190,40 +194,79 @@ class Input(Singleton["Input"]):
         )
         self._stream.start()
 
-        while len(self.buffer) == 0:
-            time.sleep(self.block_seconds / 2)
-
-    # TODO make this consistent with how i clean up in record and yamnet
     def stop(self) -> None:
         if self._stream is None:
             return
-
-        _logger.debug("stopping")
 
         self._stream.stop()
         self._stream.close()
         self._stream = None
 
+        with self._callbacks_lock:
+            self._callbacks.clear()
+
+        with self._buffer_lock:
+            self._buffer.clear()
+
     def register_callback(
         self,
         name: str,
-        callback: Callable[["Input"], None],
+        callback: Callable[[deque[Block], str | None], None],
         *,
-        interval: int = 1,  # blocks
+        window: int = 1,  # blocks
+        hop: int = 1,  # blocks
+        start_time: float | None = None,
+        start_clock: datetime | None = None,
+        start_offset: float | None = None,
     ) -> None:
         """
         register a callback
 
+        args:
+        - name: callback name (must be unique)
+        - callback: callback function
+          - signature: `callback(data: deque[Block], error: str | None)`
+        - window: number of blocks to pass to callback
+        - hop: number of blocks between calls
+        - start_time: start time (stream time)
+        - start_clock: start time (wall clock time)
+        - start_offset: start offset (seconds)
+
         notes:
-        - the buffer won't be modified while the callbacks are running, so don't
-          hold the buffer lock (or modify the buffer) (just read from it)
+        - window >= hop, hop >= 1
+        - the "start_" args are mutually exclusive
         """
+        if window < hop or hop < 1:
+            raise ValueError("need: window >= hop, hop >= 1")
+        if (
+            start_time is not None
+            and start_clock is not None
+            and start_offset is not None
+        ):
+            raise ValueError(
+                "start_time, start_clock, and start_offset are mutually exclusive"
+            )
+
+        callback = {
+            "callback": callback,
+            "window": window,
+            "hop": hop,
+            "start_time": start_time,
+            "start_clock": start_clock,
+            "start_offset": start_offset,
+        }
+
+        callback["next_call"] = window  # call when 0
+
+        if start_time is not None:
+            callback["start_time_after"] = start_time - self.block_seconds
+        if start_clock is not None:
+            callback["start_clock_after"] = start_clock - timedelta(
+                seconds=self.block_seconds
+            )
+
         with self._callbacks_lock:
-            self._callbacks[name] = {
-                "callback": callback,
-                "interval": interval,
-                "next_call": interval,  # call when 0
-            }
+            self._callbacks[name] = callback
 
     def remove_callback(self, name: str) -> None:
         """
@@ -232,6 +275,11 @@ class Input(Singleton["Input"]):
         with self._callbacks_lock:
             if name in self._callbacks:
                 del self._callbacks[name]
+
+    def _last_blocks(self, stop: int) -> deque[Block]:
+        blocks = deque(itertools.islice(reversed(self._buffer), stop))
+        blocks.reverse()
+        return blocks
 
     def _callback(
         self,
@@ -245,6 +293,8 @@ class Input(Singleton["Input"]):
 
         if status:
             _logger.warning(f"audio callback status: {status}")
+
+        # TODO
 
         with self.buffer_lock:
             self.buffer.append(
