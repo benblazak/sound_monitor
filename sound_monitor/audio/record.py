@@ -2,6 +2,7 @@ import logging
 import subprocess
 import textwrap
 import threading
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 from queue import Queue
@@ -33,71 +34,41 @@ class Record:
         self._last_block: Block | None = None
 
     def start(self, time: float | None = None) -> Self:
+        """
+        start recording
+
+        args:
+        - time: start time (stream time)
+
+        notes:
+        - time should be close to the current time (see
+          `Input.register_callback`)
+        """
         if self._queue is not None:
             raise RuntimeError("already started")
 
         self._queue = Queue()
-        with _input.buffer_lock:
-            if len(_input.buffer) == 0:
-                self.stop()
-                raise RuntimeError("input buffer is empty")
-
-            first_block = None
-            if time is not None:
-                for block in _input.buffer:
-                    if block.time > time - _input.block_seconds:
-                        self._queue.put(block)
-                        if first_block is None:
-                            first_block = block
-            # if no time
-            # if no block found (time is in the future)
-            if first_block is None:
-                first_block = _input.last_block
-                self._queue.put(first_block)
-
-            _input.register_callback(f"record-{id(self)}", self._callback)
-
-        if time is not None:
-            if first_block.time + _input.block_seconds < time:
-                _logger.warning(
-                    "starting early\n"
-                    f"  wanted: {time}\n"
-                    f"  starting: {first_block.time}"
-                )
-            if first_block.time > time:
-                _logger.warning(
-                    "starting late\n"
-                    f"  wanted: {time}\n"
-                    f"  starting: {first_block.time}"
-                )
-
-        self.start_time = first_block.time
-        self.start_clock = first_block.clock
-
-        self.path = _config.data_dir / (
-            _config.prefix(self.start_clock)
-            + (f"_{self.name}" if self.name else "")
-            + ".mp3"
-        )
-
-        # pylint: disable=consider-using-with
-        self._process = subprocess.Popen(
-            _config.record_ffmpeg_command_partial + [self.path],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-        if self._process.poll() is not None:
-            self.stop()
-            raise RuntimeError("ffmpeg failed to start")
-        # pylint: enable=consider-using-with
 
         self._thread = threading.Thread(target=self._worker)
         self._thread.start()
 
+        _input.register_callback(f"record-{id(self)}", self._callback, start_time=time)
+
         return self
 
     def stop(self, time: float | None = None) -> Self:
+        """
+        stop recording
+
+        args:
+        - time: stop time (stream time)
+
+        notes:
+        - time
+          - before start: delete file
+          - between start and stop: trim
+          - after stop: do nothing
+        """
         _input.remove_callback(f"record-{id(self)}")
 
         if self._queue is not None:
@@ -138,7 +109,7 @@ class Record:
 
         if time is not None:
             try:
-                if time < self.start_time:
+                if time <= self.start_time:
                     _logger.warning(
                         "trim: deleting file\n"
                         f"  wanted stop: {time}\n"
@@ -146,7 +117,7 @@ class Record:
                         f"  stop: {self.stop_time}"
                     )
                     self.path.unlink(missing_ok=True)
-                elif time > self.stop_time:
+                elif time >= self.stop_time:
                     _logger.warning(
                         "trim: doing nothing\n"
                         f"  start: {self.start_time}\n"
@@ -170,21 +141,48 @@ class Record:
 
         return self
 
-    def _callback(self, input: Input) -> None:
+    def _callback(self, data: deque[Block]) -> None:
         if self._queue is not None:
-            self._queue.put(input.last_block)
+            for block in data:
+                self._queue.put(block)
 
     def _worker(self) -> None:
         try:
             while True:
                 block = self._queue.get()
-                self._queue.task_done()
 
+                # last block
                 if block is None:
+                    self._queue.task_done()
                     return
+
+                # first block
+                if self.start_time is None:
+                    self.start_time = block.time
+                    self.start_clock = block.clock
+
+                    self.path = _config.data_dir / (
+                        _config.prefix(self.start_clock)
+                        + (f"_{self.name}" if self.name else "")
+                        + ".mp3"
+                    )
+
+                    # pylint: disable=consider-using-with
+                    self._process = subprocess.Popen(
+                        _config.record_ffmpeg_command_partial + [self.path],
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                    )
+                    if self._process.poll() is not None:
+                        self.stop()
+                        raise RuntimeError("ffmpeg failed to start")
+                    # pylint: enable=consider-using-with
 
                 self._last_block = block
                 self._process.stdin.write(block.recording_data.tobytes())
+
+                self._queue.task_done()
 
         except Exception as e:
             _logger.error(f"error in worker: {e}")
