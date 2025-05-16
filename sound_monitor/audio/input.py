@@ -1,11 +1,13 @@
+import functools
 import itertools
 import logging
+import math
 import threading
-import time
 from collections import deque
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from math import gcd
+from queue import Queue
 
 import numpy as np
 import sounddevice as sd
@@ -102,6 +104,7 @@ class Block:
         self._gain_data: np.ndarray | None = None
         self._yamnet_data: np.ndarray | None = None
         self._peak_data: np.ndarray | None = None
+        self._direction_data: np.ndarray | None = None
 
     @property
     def gain_data(self) -> np.ndarray:
@@ -141,7 +144,9 @@ class Block:
     @property
     def direction_data(self) -> np.ndarray:
         """all channels, filtered"""
-        return self.filter(self.gain_data)
+        if self._direction_data is None:
+            self._direction_data = self.filter(self.gain_data)
+        return self._direction_data
 
 
 class Input(Singleton["Input"]):
@@ -154,25 +159,31 @@ class Input(Singleton["Input"]):
     buffer_size: int = _config.audio_buffer_seconds * blocks_per_second
 
     def __init__(self) -> None:
-        self._stream: sd.InputStream | None = None
-
         self._callbacks: dict[str, dict] = {}
-        self._callbacks_lock = threading.Lock()
+        self._callbacks_lock = threading.RLock()
+        "acquisition order: _buffer_lock, _callbacks_lock"
 
         self._buffer: deque[Block] = deque(maxlen=self.buffer_size)
-        self._buffer_lock = threading.Lock()
+        self._buffer_lock = threading.RLock()
+        "acquisition order: _buffer_lock, _callbacks_lock"
+
+        self._queue: Queue[Block] | None = None
+        self._thread: threading.Thread | None = None
+        self._stream: sd.InputStream | None = None
 
     @property
     def time(self) -> float | None:
-        if len(self._buffer) == 0:
-            return None
-        return self._buffer[-1].time
+        with self._buffer_lock:
+            if len(self._buffer) == 0:
+                return None
+            return self._buffer[-1].time
 
     @property
     def clock(self) -> datetime | None:
-        if len(self._buffer) == 0:
-            return None
-        return self._buffer[-1].clock
+        with self._buffer_lock:
+            if len(self._buffer) == 0:
+                return None
+            return self._buffer[-1].clock
 
     def start(self) -> None:
         if self._stream is not None:
@@ -183,6 +194,11 @@ class Input(Singleton["Input"]):
 
         with self._buffer_lock:
             self._buffer.clear()
+
+        self._queue = Queue()
+
+        self._thread = threading.Thread(target=self._worker)
+        self._thread.start()
 
         self._stream = sd.InputStream(
             device=_config.uma8_device_id,
@@ -195,12 +211,17 @@ class Input(Singleton["Input"]):
         self._stream.start()
 
     def stop(self) -> None:
-        if self._stream is None:
-            return
+        if self._stream is not None:
+            self._stream.stop()
+            self._stream.close()
 
-        self._stream.stop()
-        self._stream.close()
-        self._stream = None
+        if self._queue is not None:
+            self._queue.put(None)
+
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                _logger.error("thread failed to stop")
 
         with self._callbacks_lock:
             self._callbacks.clear()
@@ -208,16 +229,18 @@ class Input(Singleton["Input"]):
         with self._buffer_lock:
             self._buffer.clear()
 
+        self._queue = None
+        self._thread = None
+        self._stream = None
+
     def register_callback(
         self,
         name: str,
-        callback: Callable[[deque[Block], str | None], None],
+        callback: Callable[[deque[Block]], None],
         *,
         window: int = 1,  # blocks
         hop: int = 1,  # blocks
         start_time: float | None = None,
-        start_clock: datetime | None = None,
-        start_offset: float | None = None,
     ) -> None:
         """
         register a callback
@@ -225,48 +248,33 @@ class Input(Singleton["Input"]):
         args:
         - name: callback name (must be unique)
         - callback: callback function
-          - signature: `callback(data: deque[Block], error: str | None)`
+          - signature: `callback(data: deque[Block])`
         - window: number of blocks to pass to callback
         - hop: number of blocks between calls
         - start_time: start time (stream time)
-        - start_clock: start time (wall clock time)
-        - start_offset: start offset (seconds)
 
         notes:
         - window >= hop, hop >= 1
-        - the "start_" args are mutually exclusive
+        - start_time should be close to the current time (we don't account for
+          potential clock drift or floating point errors)
         """
         if window < hop or hop < 1:
             raise ValueError("need: window >= hop, hop >= 1")
-        if (
-            start_time is not None
-            and start_clock is not None
-            and start_offset is not None
-        ):
-            raise ValueError(
-                "start_time, start_clock, and start_offset are mutually exclusive"
-            )
 
-        callback = {
+        c = {
+            "name": name,
             "callback": callback,
             "window": window,
             "hop": hop,
+            "next_call": None,  # call when 0 if not None
             "start_time": start_time,
-            "start_clock": start_clock,
-            "start_offset": start_offset,
         }
 
-        callback["next_call"] = window  # call when 0
-
-        if start_time is not None:
-            callback["start_time_after"] = start_time - self.block_seconds
-        if start_clock is not None:
-            callback["start_clock_after"] = start_clock - timedelta(
-                seconds=self.block_seconds
-            )
+        if start_time is None:
+            c["next_call"] = window
 
         with self._callbacks_lock:
-            self._callbacks[name] = callback
+            self._callbacks[name] = c
 
     def remove_callback(self, name: str) -> None:
         """
@@ -275,11 +283,6 @@ class Input(Singleton["Input"]):
         with self._callbacks_lock:
             if name in self._callbacks:
                 del self._callbacks[name]
-
-    def _last_blocks(self, stop: int) -> deque[Block]:
-        blocks = deque(itertools.islice(reversed(self._buffer), stop))
-        blocks.reverse()
-        return blocks
 
     def _callback(
         self,
@@ -294,24 +297,101 @@ class Input(Singleton["Input"]):
         if status:
             _logger.warning(f"audio callback status: {status}")
 
-        # TODO
-
-        with self.buffer_lock:
-            self.buffer.append(
-                Block(
-                    data=indata.copy(),
-                    time=time.inputBufferAdcTime,
-                    clock=now
-                    - timedelta(seconds=time.currentTime - time.inputBufferAdcTime),
-                )
+        self._queue.put(
+            Block(
+                data=indata.copy(),
+                time=time.inputBufferAdcTime,
+                clock=now
+                - timedelta(seconds=time.currentTime - time.inputBufferAdcTime),
             )
+        )
 
-        callbacks = []
-        with self._callbacks_lock:
-            for c in self._callbacks.values():
+    def _worker(self) -> None:
+
+        def _last_blocks(buffer: deque[Block], stop: int) -> deque[Block]:
+            blocks = deque(itertools.islice(reversed(buffer), stop))
+            blocks.reverse()
+            return blocks
+
+        def _process(
+            calls: deque[Callable[[], None]],
+            buffer: deque[Block],
+            callbacks: dict[str, dict],
+        ) -> None:
+            for c in callbacks:
                 c["next_call"] -= 1
                 if c["next_call"] <= 0:
-                    callbacks.append(c)
-                    c["next_call"] = c["interval"]
-        for c in callbacks:
-            c["callback"](input=self)
+                    calls.append(
+                        functools.partial(
+                            c["callback"], data=_last_blocks(buffer, c["window"])
+                        )
+                    )
+                    c["next_call"] = c["hop"]
+
+        try:
+            while True:
+                block = self._queue.get()
+
+                if block is None:
+                    self._queue.task_done()
+                    return
+
+                calls = deque()
+
+                with self._buffer_lock:
+                    with self._callbacks_lock:
+
+                        past_callbacks = deque()
+
+                        for c in self._callbacks.values():
+                            if c["start_time"] is None:
+                                continue
+
+                            # negative index in the buffer
+                            # - equivalent to index relative to `block` which is one past the end of the buffer
+                            neg_index = math.floor(
+                                (c["start_time"] - block.time) / self.block_seconds
+                            )
+
+                            # past
+                            if neg_index < 0:
+
+                                # buffer might be empty, this should still work
+                                index = len(self._buffer) + neg_index
+                                if index < 0:
+                                    _logger.warning(
+                                        f"{c['name']}: starting {-index * self.block_seconds} seconds late"
+                                    )
+                                    index = 0
+
+                                c["next_call"] = index + c["window"]
+
+                                past_callbacks.append(c)
+
+                            # present, future
+                            else:
+                                c["next_call"] = neg_index + c["window"]
+
+                            c["start_time"] = None
+
+                        # process past callbacks
+                        if len(past_callbacks) > 0:
+                            buffer = deque()
+                            for b in self._buffer:
+                                buffer.append(b)
+                                _process(calls, buffer, past_callbacks)
+
+                        # add to buffer
+                        self._buffer.append(block)
+
+                        # process all callbacks
+                        _process(calls, self._buffer, self._callbacks)
+
+                self._queue.task_done()
+
+                for c in calls:
+                    c()
+
+        except Exception:
+            _logger.exception("error in worker")
+            self.stop()
