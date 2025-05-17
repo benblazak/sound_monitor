@@ -159,6 +159,8 @@ class Input(Singleton["Input"]):
     buffer_size: int = _config.audio_buffer_seconds * blocks_per_second
 
     def __init__(self) -> None:
+        self.error: str | None = None
+
         self._callbacks: dict[str, dict] = {}
         self._callbacks_lock = threading.RLock()
         "acquisition order: _buffer_lock, _callbacks_lock"
@@ -218,7 +220,7 @@ class Input(Singleton["Input"]):
         if self._queue is not None:
             self._queue.put(None)
 
-        if self._thread is not None:
+        if self._thread not in (None, threading.current_thread()):
             self._thread.join(timeout=5)
             if self._thread.is_alive():
                 _logger.error("thread failed to stop")
@@ -393,5 +395,6 @@ class Input(Singleton["Input"]):
                     c()
 
         except Exception:
-            _logger.exception("error in worker")
+            self.error = "error in worker"
+            _logger.exception(self.error)
             self.stop()
