@@ -19,9 +19,18 @@ _input = Input.get()
 
 
 class Record:
+    """
+    record audio
+
+    notes:
+    - instances are meant to be single use
+    """
+
     def __init__(self, name: str | None = None) -> None:
         self.name: str | None = name
         self.path: Path | None = None
+
+        self.error: str | None = None
 
         self.start_time: float | None = None  # stream time
         self.stop_time: float | None = None  # stream time
@@ -41,11 +50,12 @@ class Record:
         - time: start time (stream time)
 
         notes:
-        - time should be close to the current time (see
-          `Input.register_callback`)
+        - time should be close to the current time (see `Input.register_callback`)
         """
         if self._queue is not None:
             raise RuntimeError("already started")
+        if self.start_time is not None:
+            raise RuntimeError("instances are meant to be single use")
 
         self._queue = Queue()
 
@@ -74,7 +84,7 @@ class Record:
         if self._queue is not None:
             self._queue.put(None)
 
-        if self._thread is not None:
+        if self._thread not in (None, threading.current_thread()):
             self._thread.join(timeout=5)
             if self._thread.is_alive():
                 _logger.error("thread failed to stop")
@@ -109,30 +119,29 @@ class Record:
 
         if time is not None:
             try:
-                if time <= self.start_time:
+                if self.start_time is None:
+                    _logger.warning(f"trim {self.path}: no start time")
+                elif self.stop_time is None:
+                    _logger.warning(f"trim {self.path}: no stop time")
+                elif time <= self.start_time:
                     _logger.warning(
-                        "trim: deleting file\n"
-                        f"  wanted stop: {time}\n"
-                        f"  start: {self.start_time}\n"
-                        f"  stop: {self.stop_time}"
+                        f"can't trim {self.path} to start-{self.start_time - time}s -- deleting file"
                     )
                     self.path.unlink(missing_ok=True)
                 elif time >= self.stop_time:
                     _logger.warning(
-                        "trim: doing nothing\n"
-                        f"  start: {self.start_time}\n"
-                        f"  stop: {self.stop_time}\n"
-                        f"  wanted stop: {time}"
+                        f"can't trim {self.path} to stop+{time-self.stop_time}s -- doing nothing"
                     )
                 else:
+                    length = self.stop_time - self.start_time
                     trim_length = time - self.start_time
                     audio_trim(self.path, length=trim_length)
                     self.stop_time = time
                     self.stop_clock = self.stop_clock - timedelta(
-                        seconds=self.stop_time - time
+                        seconds=length - trim_length
                     )
-            except Exception as e:
-                _logger.error(f"trim failed: {e}")
+            except Exception:
+                _logger.exception("trim failed")
 
         self._queue = None
         self._thread = None
@@ -175,8 +184,9 @@ class Record:
                         stderr=subprocess.PIPE,
                     )
                     if self._process.poll() is not None:
+                        self.error = "ffmpeg failed to start"
+                        _logger.error(self.error)
                         self.stop()
-                        raise RuntimeError("ffmpeg failed to start")
                     # pylint: enable=consider-using-with
 
                 self._last_block = block
@@ -184,6 +194,7 @@ class Record:
 
                 self._queue.task_done()
 
-        except Exception as e:
-            _logger.error(f"error in worker: {e}")
+        except Exception:
+            self.error = "error in worker"
+            _logger.exception(self.error)
             self.stop()
