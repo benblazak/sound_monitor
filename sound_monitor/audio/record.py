@@ -175,6 +175,7 @@ class Record:
                         + (f"_{self.name}" if self.name else "")
                         + ".mp3"
                     )
+                    self.path.parent.mkdir(parents=True, exist_ok=True)
 
                     # pylint: disable=consider-using-with
                     self._process = subprocess.Popen(

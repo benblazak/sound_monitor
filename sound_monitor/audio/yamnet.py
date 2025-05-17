@@ -286,6 +286,6 @@ class YAMNet(Singleton["YAMNet"]):
                 for c in callbacks:
                     c["callback"](yamnet=self)
 
-        except Exception as e:
-            _logger.error(f"error in worker: {e}")
+        except Exception:
+            _logger.exception("error in worker")
             self.stop()

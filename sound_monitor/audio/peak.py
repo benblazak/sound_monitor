@@ -186,8 +186,8 @@ class Peak(Singleton["Peak"]):
                 if blk is None:
                     return
                 self._process_block(blk)
-        except Exception as exc:
-            _logger.error(f"error in peak worker: {exc}")
+        except Exception:
+            _logger.exception("error in peak worker")
             self.stop()
 
     def _process_block(self, blk: _Block) -> None:
