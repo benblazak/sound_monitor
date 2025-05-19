@@ -1,5 +1,6 @@
 import csv
 import logging
+import math
 import threading
 from collections import deque
 from collections.abc import Callable
@@ -123,6 +124,8 @@ class Scores:
         """
         mean scores
 
+        covering `time` to `time + 0.5s`
+
         actually from `time` to `time + 0.46s`, but we'll treat it like a full
         half second
 
@@ -141,17 +144,22 @@ class Scores:
 
 
 class YAMNet(Singleton["YAMNet"]):
-    if Input.blocks_per_second != 10:
-        raise ValueError("YAMNet depends on 0.1s blocks")
 
     sample_rate = 16000  # native
     window_seconds = 0.96  # native
-    hop_seconds = 0.5  # native is 0.48s, but we need to align with Input blocks
+    hop_seconds = 0.48  # native
 
     window_samples = int(window_seconds * sample_rate)
-    hop_samples = int(hop_seconds * sample_rate)
-    buffer_samples = sample_rate  # 1s buffer
-    input_interval = int(hop_seconds * _input.blocks_per_second)
+
+    window_blocks = math.ceil(window_seconds * _input.blocks_per_second)
+    hop_blocks = round(hop_seconds * _input.blocks_per_second)
+    if _input.blocks_per_second != 10:
+        _logger.warning(
+            "check comments and assumptions\n"
+            f"  - blocks_per_second: {_input.blocks_per_second}\n"
+            f"  - window_blocks: {window_blocks}\n"
+            f"  - hop_blocks: {hop_blocks}"
+        )
 
     def __init__(self) -> None:
         self._interpreter = Interpreter(model_path=str(_config.yamnet_model))
@@ -172,25 +180,28 @@ class YAMNet(Singleton["YAMNet"]):
         self._callbacks: dict[str, dict] = {}
         self._callbacks_lock = threading.Lock()
 
-        self._scores: deque[Scores] = deque(maxlen=2)
-        self._scores_lock = threading.Lock()
-
-        self._queue: Queue[_Block] | None = None
+        self._queue: Queue[deque[Block]] | None = None
         self._thread: threading.Thread | None = None
+        self._last_scores: Scores | None = None
 
     def start(self) -> None:
         if self._queue is not None:
             return
+
+        with self._callbacks_lock:
+            self._callbacks.clear()
+
         self._queue = Queue()
+
+        self._thread = threading.Thread(target=self._worker)
+        self._thread.start()
 
         _input.register_callback(
             f"yamnet-{id(self)}",
             self._callback,
-            interval=self.input_interval,
+            window=self.window_blocks,
+            hop=self.hop_blocks,
         )
-
-        self._thread = threading.Thread(target=self._worker)
-        self._thread.start()
 
     def stop(self) -> None:
         _input.remove_callback(f"yamnet-{id(self)}")
@@ -198,34 +209,42 @@ class YAMNet(Singleton["YAMNet"]):
         if self._queue is not None:
             self._queue.put(None)
 
-        if self._thread is not None:
+        if self._thread not in (None, threading.current_thread()):
             self._thread.join(timeout=5)
             if self._thread.is_alive():
                 _logger.error("thread failed to stop")
 
+        with self._callbacks_lock:
+            self._callbacks.clear()
+
         self._queue = None
         self._thread = None
-        self._last_block = None
+        self._last_scores = None
 
     def register_callback(
         self,
         name: str,
-        callback: Callable[["YAMNet"], None],
+        callback: Callable[[Scores], None],
     ) -> None:
+        """
+        TODO
+        """
         with self._callbacks_lock:
             self._callbacks[name] = {
                 "callback": callback,
             }
 
     def remove_callback(self, name: str) -> None:
+        """
+        remove a callback
+        """
         with self._callbacks_lock:
             if name in self._callbacks:
                 del self._callbacks[name]
 
-    def _callback(self, input: Input) -> None:
+    def _callback(self, data: deque[Block]) -> None:
         if self._queue is not None:
-            blocks = input.last_blocks(self.input_interval)
-            self._queue.put(_Block(blocks))
+            self._queue.put(data)
 
     def _worker(self) -> None:
         try:
