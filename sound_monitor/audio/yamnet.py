@@ -21,6 +21,7 @@ _input = Input.get()
 
 
 class _Block:
+    # TODO probably just want to store the deque[Block]'s and concatenate them before processing
     def __init__(self, data: deque[Block]):
         self.data = np.concatenate([block.yamnet_data.reshape(-1) for block in data])
         self.time = data[0].time
@@ -28,37 +29,26 @@ class _Block:
 
 
 class Scores:
+
     @staticmethod
-    def _get_class_names() -> list[str]:
+    def _get_class_names() -> np.ndarray:
         """get class names from yamnet class map"""
         with open(_config.yamnet_class_map, encoding="utf-8") as file:
             reader = csv.reader(file)
             next(reader)  # skip header
-            return [row[2] for row in reader]
+            return np.array([row[2].lower() for row in reader], dtype=str)
 
     class_names = _get_class_names()
 
-    @classmethod
-    def max(cls, *scores: Self) -> Self:
-        "max scores -- time and clock are from the first score"
-        data = np.max([score.data for score in scores], axis=0)
-        return cls(
-            data=data,
-            time=scores[0].time,
-            clock=scores[0].clock,
-        )
+    def __init__(
+        self,
+        data: np.ndarray,
+        time: float,
+        clock: datetime,
+        *,
+        previous: Self | None = None,
+    ) -> None:
 
-    @classmethod
-    def mean(cls, *scores: Self) -> Self:
-        "mean scores -- time and clock are from the first score"
-        data = np.mean([score.data for score in scores], axis=0)
-        return cls(
-            data=data,
-            time=scores[0].time,
-            clock=scores[0].clock,
-        )
-
-    def __init__(self, data: np.ndarray, time: float, clock: datetime) -> None:
         self.data: np.ndarray = data
         """
         scores -- float32, shape (512,)
@@ -70,6 +60,84 @@ class Scores:
 
         self.time: float = time
         self.clock: datetime = clock
+
+        self.previous: Self | None = (
+            None
+            if previous is None
+            else self.__class__(
+                data=previous.data,
+                time=previous.time,
+                clock=previous.clock,
+            )
+        )
+        """
+        previous scores -- for calculating max and mean
+
+        notes:
+        - we make a (shallow) copy without previous.previous to avoid creating
+          an implicit linked list
+        """
+
+    @property
+    def raw(self) -> dict[str, float]:
+        """
+        raw scores
+
+        covering `time` to `time + 1s`
+
+        actually from `time` to `time + 0.96s`, but we'll treat it like a full
+        second
+        """
+        return dict(
+            zip(
+                self.class_names,
+                self.data,
+            )
+        )
+
+    @property
+    def max(self) -> dict[str, float]:
+        """
+        max scores
+
+        covering `time` to `time + 0.5s`
+
+        actually from `time` to `time + 0.46s`, but we'll treat it like a full
+        half second
+
+        each window overlaps with the previous window by about 0.5s. this is the
+        max of the scores for the two windows that overlap from `time` to
+        `time + 0.5s`
+        """
+        if self.previous is None:
+            return self.raw
+        return dict(
+            zip(
+                self.class_names,
+                np.max([self.previous.data, self.data], axis=0),
+            )
+        )
+
+    @property
+    def mean(self) -> dict[str, float]:
+        """
+        mean scores
+
+        actually from `time` to `time + 0.46s`, but we'll treat it like a full
+        half second
+
+        each window overlaps with the previous window by about 0.5s. this is the
+        mean of the scores for the two windows that overlap from `time` to
+        `time + 0.5s`
+        """
+        if self.previous is None:
+            return self.raw
+        return dict(
+            zip(
+                self.class_names,
+                np.mean([self.previous.data, self.data], axis=0),
+            )
+        )
 
 
 class YAMNet(Singleton["YAMNet"]):
@@ -104,63 +172,11 @@ class YAMNet(Singleton["YAMNet"]):
         self._callbacks: dict[str, dict] = {}
         self._callbacks_lock = threading.Lock()
 
-        # lock for writes (in this file), or to (very quickly) pause writes
         self._scores: deque[Scores] = deque(maxlen=2)
         self._scores_lock = threading.Lock()
 
         self._queue: Queue[_Block] | None = None
         self._thread: threading.Thread | None = None
-        self._last_block: _Block | None = None
-
-    @property
-    def time(self) -> float:
-        return self._scores[-1].time
-
-    @property
-    def clock(self) -> datetime:
-        return self._scores[-1].clock
-
-    @property
-    def scores(self) -> Scores:
-        """
-        latest scores
-
-        covering `time` to `time + 1s`
-
-        actually from `time` to `time + 0.96s`, but we'll treat it like a full
-        second
-        """
-        return self._scores[-1]
-
-    @property
-    def scores_max(self) -> Scores:
-        """ "
-        max scores
-
-        covering `time` to `time + 0.5s`
-
-        actually from `time` to `time + 0.46s`, but we'll treat it like a full
-        half second
-
-        each window overlaps with the previous window by about 0.5s. this is the
-        max of the scores for the two windows that overlap from `time` to
-        `time + 0.5s`
-        """
-        return Scores.max(*reversed(self._scores))
-
-    @property
-    def scores_mean(self) -> Scores:
-        """
-        mean scores
-
-        actually from `time` to `time + 0.46s`, but we'll treat it like a full
-        half second
-
-        each window overlaps with the previous window by about 0.5s. this is the
-        mean of the scores for the two windows that overlap from `time` to
-        `time + 0.5s`
-        """
-        return Scores.mean(*reversed(self._scores))
 
     def start(self) -> None:
         if self._queue is not None:
