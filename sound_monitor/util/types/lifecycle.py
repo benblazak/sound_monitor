@@ -12,12 +12,6 @@ class State(StrEnum):
     DONE = auto()
 
 
-class InitStopBehavior(StrEnum):
-    ALLOW = auto()
-    NOP = auto()
-    RAISE = auto()
-
-
 class StateTransitionError(Exception):
     pass
 
@@ -105,17 +99,12 @@ class Lifecycle:
             self._state = State.STARTING
             return True
 
-    def prepare_stop(
-        self, *, init_behavior: InitStopBehavior = InitStopBehavior.ALLOW
-    ) -> bool:
+    def prepare_stop(self, *, raise_if_init: bool = False) -> bool:
         """
         prepare to stop
 
         args:
-        - init_behavior: behavior when in State.INIT
-          - ALLOW: return True (see below)
-          - NOP: return False
-          - RAISE: raise StateTransitionError
+        - raise_if_init: raise StateTransitionError if currently in State.INIT
 
         returns:
         - True if the caller should run (stop)
@@ -131,13 +120,7 @@ class Lifecycle:
                 return False
             elif self._state is State.STARTING:
                 raise StateTransitionError("can't stop: currently starting")
-            elif self._state is State.INIT:
-                match init_behavior:
-                    case InitStopBehavior.ALLOW:
-                        pass
-                    case InitStopBehavior.NOP:
-                        return False
-                    case InitStopBehavior.RAISE:
-                        raise StateTransitionError("can't stop: not started")
+            elif self._state is State.INIT and raise_if_init:
+                raise StateTransitionError("can't stop: not started")
             self._state = State.STOPPING
             return True
