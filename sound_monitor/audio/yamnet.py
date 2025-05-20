@@ -1,4 +1,5 @@
 import csv
+import functools
 import logging
 import math
 import threading
@@ -19,14 +20,6 @@ _config = Config.get()
 _logger = logging.getLogger(__name__)
 
 _input = Input.get()
-
-
-class _Block:
-    # TODO probably just want to store the deque[Block]'s and concatenate them before processing
-    def __init__(self, data: deque[Block]):
-        self.data = np.concatenate([block.yamnet_data.reshape(-1) for block in data])
-        self.time = data[0].time
-        self.clock = data[0].clock
 
 
 class Scores:
@@ -162,6 +155,8 @@ class YAMNet(Singleton["YAMNet"]):
         )
 
     def __init__(self) -> None:
+        self.error: str | None = None
+
         self._interpreter = Interpreter(model_path=str(_config.yamnet_model))
 
         input_details = self._interpreter.get_input_details()
@@ -227,7 +222,12 @@ class YAMNet(Singleton["YAMNet"]):
         callback: Callable[[Scores], None],
     ) -> None:
         """
-        TODO
+        register a callback
+
+        args:
+        - name: callback name (must be unique)
+        - callback: callback function
+          - signature: `callback(data: Scores)`
         """
         with self._callbacks_lock:
             self._callbacks[name] = {
@@ -249,50 +249,17 @@ class YAMNet(Singleton["YAMNet"]):
     def _worker(self) -> None:
         try:
             while True:
-                block = self._queue.get()
-                self._queue.task_done()
+                blocks = self._queue.get()
 
-                if block is None:
+                if blocks is None:
+                    self._queue.task_done()
                     return
 
-                if self._last_block is None:
-                    self._last_block = block
-                    # TODO i never update this lol
-
-                    # TODO i might want to change this logic though.
-                    #
-                    # i feel like _Block should be a thing that's processed by
-                    # worker. which would mean that _callback needs to keep
-                    # track of incoming blocks and group them into _Block's
-                    # appropriately. it might be good in that case to change how
-                    # callbacks work, so that a subscriber can have an initial
-                    # number of blocks, and a subsequent number of blocks. or
-                    # else can have all blocks, possibly with a filter... or
-                    # else a "past seconds" or "after time".
-                    #
-                    # actually, we could call the callback parameters window and
-                    # hop. and we could send the callback function `window`
-                    # blocks, every `hop` new blocks.
-                    #
-                    # and then we could handle past blocks somehow. maybe with a
-                    # `start_time` callback parameter, that could be stream
-                    # time. dunno if we also want to have `start_offset`
-                    #
-                    # callbacks will need to receive an `error` parameter too
-                    # then, if they specify a start.
-                    #
-                    # in this case, we don't need a _Block at all actually, we
-                    # can just put deque's of Block's into the queue
-                    #
-                    # while we're at it, we should think about how to pass
-                    # errors back from worker threads too, maybe
-                    continue
-
-                data = np.concatenate([self._last_block.data, block.data])[
-                    : self.window_samples
-                ]
-                time = self._last_block.time
-                clock = self._last_block.clock
+                data = np.concatenate(
+                    [block.yamnet_data.reshape(-1) for block in blocks]
+                )[: self.window_samples]
+                time = blocks[0].time
+                clock = blocks[0].clock
 
                 self._interpreter.set_tensor(
                     self._waveform_input_index,
@@ -301,26 +268,34 @@ class YAMNet(Singleton["YAMNet"]):
                 self._interpreter.invoke()
 
                 scores: np.ndarray = self._interpreter.get_tensor(
-                    self._scores_output_index
+                    self._scores_output_index,
                 )
                 scores = scores.reshape(-1)  # reshape from (1, 512) to (512,)
 
-                with self._scores_lock:
-                    self._scores.append(
-                        Scores(
-                            data=scores,
-                            time=time,
-                            clock=clock,
-                        )
-                    )
+                self._last_scores = Scores(
+                    data=scores,
+                    time=time,
+                    clock=clock,
+                    previous=self._last_scores,
+                )
 
-                callbacks = []
+                calls = deque()
+
                 with self._callbacks_lock:
                     for c in self._callbacks.values():
-                        callbacks.append(c)
-                for c in callbacks:
-                    c["callback"](yamnet=self)
+                        calls.append(
+                            functools.partial(
+                                c["callback"],
+                                data=self._last_scores,
+                            )
+                        )
+
+                for c in calls:
+                    c()
+
+                self._queue.task_done()
 
         except Exception:
-            _logger.exception("error in worker")
+            self.error = "error in worker"
+            _logger.exception(self.error)
             self.stop()
