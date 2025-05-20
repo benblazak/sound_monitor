@@ -1,5 +1,6 @@
 import logging
 import signal
+import sys
 import time
 from collections import OrderedDict
 
@@ -20,6 +21,7 @@ _yamnet = YAMNet.get()
 def signal_handler(sig, frame):
     _yamnet.stop()
     _input.stop()
+    sys.exit(0)
 
 
 def main():
@@ -49,3 +51,7 @@ def main():
 
     while True:
         time.sleep(1)
+
+
+if __name__ == "__main__":
+    main()
