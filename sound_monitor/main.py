@@ -1,7 +1,7 @@
 import logging
 import signal
-
-import numpy as np
+import time
+from collections import OrderedDict
 
 from sound_monitor.audio.input import Input
 from sound_monitor.audio.yamnet import Scores, YAMNet
@@ -30,14 +30,22 @@ def main():
     _input.start()
     _yamnet.start()
 
-    def yamnet_callback(yamnet: YAMNet) -> None:
+    def yamnet_callback(data: Scores) -> None:
+        mean = data.mean
         top = 100
         threshold = 0.01
-        indices = np.argsort(yamnet.scores.data)[-top:][::-1]
-        indices = [i for i in indices if yamnet.scores.data[i] >= threshold]
-        indices.reverse()
-        for i in indices:
-            print(f"{yamnet.scores.data[i]:.2f} - {Scores.class_names[i]}")
+        mean = OrderedDict(
+            {
+                k: v
+                for k, v in sorted(mean.items(), key=lambda x: x[1], reverse=True)[:top]
+                if v >= threshold
+            }
+        )
+        for k, v in reversed(mean.items()):
+            print(f"{v:.2f} - {k}")
         print()
 
     _yamnet.register_callback("main", yamnet_callback)
+
+    while True:
+        time.sleep(1)

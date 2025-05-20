@@ -4,7 +4,7 @@ import logging
 import math
 import threading
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
 from math import gcd
 from queue import Queue
@@ -321,7 +321,7 @@ class Input(Singleton["Input"]):
         def _process(
             calls: deque[Callable[[], None]],
             buffer: deque[Block],
-            callbacks: dict[str, dict],
+            callbacks: Iterable[dict],
         ) -> None:
             for c in callbacks:
                 c["next_call"] -= 1
@@ -390,7 +390,7 @@ class Input(Singleton["Input"]):
                         self._buffer.append(block)
 
                         # process all callbacks
-                        _process(calls, self._buffer, self._callbacks)
+                        _process(calls, self._buffer, self._callbacks.values())
 
                 for c in calls:
                     c()
