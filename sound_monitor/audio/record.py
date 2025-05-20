@@ -11,6 +11,7 @@ from typing import Self
 from sound_monitor.audio.input import Block, Input
 from sound_monitor.audio.util import audio_trim
 from sound_monitor.config import Config
+from sound_monitor.util.types.lifecycle import Lifecycle, State
 
 _config = Config.get()
 _logger = logging.getLogger(__name__)
@@ -37,6 +38,8 @@ class Record:
         self.start_clock: datetime | None = None  # wall clock time
         self.stop_clock: datetime | None = None  # wall clock time
 
+        self._lifecycle = Lifecycle()
+
         self._queue: Queue[Block] | None = None
         self._thread: threading.Thread | None = None
         self._process: subprocess.Popen | None = None
@@ -52,10 +55,8 @@ class Record:
         notes:
         - time should be close to the current time (see `Input.register_callback`)
         """
-        if self._queue is not None:
+        if not self._lifecycle.prepare_start():
             raise RuntimeError("already started")
-        if self.start_time is not None:
-            raise RuntimeError("instances are meant to be single use")
 
         self._queue = Queue()
 
@@ -64,6 +65,7 @@ class Record:
 
         _input.register_callback(f"record-{id(self)}", self._callback, start_time=time)
 
+        self._lifecycle.state = State.STARTED
         return self
 
     def stop(self, time: float | None = None) -> Self:
@@ -79,6 +81,9 @@ class Record:
           - between start and stop: trim
           - after stop: do nothing
         """
+        if not self._lifecycle.prepare_stop():
+            return
+
         _input.remove_callback(f"record-{id(self)}")
 
         if self._queue is not None:
@@ -148,6 +153,7 @@ class Record:
         self._process = None
         self._last_block = None
 
+        self._lifecycle.state = State.DONE
         return self
 
     def _callback(self, data: deque[Block]) -> None:

@@ -14,6 +14,7 @@ from ai_edge_litert.interpreter import Interpreter
 
 from sound_monitor.audio.input import Block, Input
 from sound_monitor.config import Config
+from sound_monitor.util.types.lifecycle import Lifecycle, State
 from sound_monitor.util.types.singleton import Singleton
 
 _config = Config.get()
@@ -172,15 +173,19 @@ class YAMNet(Singleton["YAMNet"]):
         )
         self._interpreter.allocate_tensors()
 
-        self._callbacks: dict[str, dict] = {}
-        self._callbacks_lock = threading.Lock()
+        self._lifecycle: Lifecycle = Lifecycle()
 
         self._queue: Queue[deque[Block]] | None = None
         self._thread: threading.Thread | None = None
         self._last_scores: Scores | None = None
 
+        # locks: acquire in order
+
+        self._callbacks: dict[str, dict] = {}
+        self._callbacks_lock = threading.Lock()
+
     def start(self) -> None:
-        if self._queue is not None:
+        if not self._lifecycle.prepare_start():
             return
 
         with self._callbacks_lock:
@@ -198,7 +203,12 @@ class YAMNet(Singleton["YAMNet"]):
             hop=self.hop_blocks,
         )
 
+        self._lifecycle.state = State.STARTED
+
     def stop(self) -> None:
+        if not self._lifecycle.prepare_stop():
+            return
+
         _input.remove_callback(f"yamnet-{id(self)}")
 
         if self._queue is not None:
@@ -215,6 +225,8 @@ class YAMNet(Singleton["YAMNet"]):
         self._queue = None
         self._thread = None
         self._last_scores = None
+
+        self._lifecycle.state = State.STOPPED
 
     def register_callback(
         self,

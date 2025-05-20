@@ -14,6 +14,7 @@ import sounddevice as sd
 from scipy.signal import butter, resample_poly, sosfilt
 
 from sound_monitor.config import Config
+from sound_monitor.util.types.lifecycle import Lifecycle, State
 from sound_monitor.util.types.singleton import Singleton
 
 _config = Config.get()
@@ -164,17 +165,23 @@ class Input(Singleton["Input"]):
     def __init__(self) -> None:
         self.error: str | None = None
 
-        self._callbacks: dict[str, dict] = {}
-        self._callbacks_lock = threading.RLock()
-        "acquisition order: _buffer_lock, _callbacks_lock"
-
-        self._buffer: deque[Block] = deque(maxlen=self.buffer_size)
-        self._buffer_lock = threading.RLock()
-        "acquisition order: _buffer_lock, _callbacks_lock"
+        self._lifecycle: Lifecycle = Lifecycle()
 
         self._queue: Queue[Block] | None = None
         self._thread: threading.Thread | None = None
         self._stream: sd.InputStream | None = None
+
+        # locks: acquire in order
+
+        self._buffer: deque[Block] = deque(maxlen=self.buffer_size)
+        self._buffer_lock = threading.RLock()
+
+        self._callbacks: dict[str, dict] = {}
+        self._callbacks_lock = threading.RLock()
+
+    @property
+    def state(self) -> State:
+        return self._lifecycle.state
 
     @property
     def time(self) -> float | None:
@@ -191,7 +198,7 @@ class Input(Singleton["Input"]):
             return self._buffer[-1].clock
 
     def start(self) -> None:
-        if self._stream is not None:
+        if not self._lifecycle.prepare_start():
             return
 
         with self._callbacks_lock:
@@ -215,7 +222,12 @@ class Input(Singleton["Input"]):
         )
         self._stream.start()
 
+        self._lifecycle.state = State.STARTED
+
     def stop(self) -> None:
+        if not self._lifecycle.prepare_stop():
+            return
+
         if self._stream is not None:
             self._stream.stop()
             self._stream.close()
@@ -237,6 +249,8 @@ class Input(Singleton["Input"]):
         self._queue = None
         self._thread = None
         self._stream = None
+
+        self._lifecycle.state = State.STOPPED
 
     def register_callback(
         self,
@@ -302,14 +316,15 @@ class Input(Singleton["Input"]):
         if status:
             _logger.warning(f"audio callback status: {status}")
 
-        self._queue.put(
-            Block(
-                data=indata.copy(),
-                time=time.inputBufferAdcTime,
-                clock=now
-                - timedelta(seconds=time.currentTime - time.inputBufferAdcTime),
+        if self._queue is not None:
+            self._queue.put(
+                Block(
+                    data=indata.copy(),
+                    time=time.inputBufferAdcTime,
+                    clock=now
+                    - timedelta(seconds=time.currentTime - time.inputBufferAdcTime),
+                )
             )
-        )
 
     def _worker(self) -> None:
 
