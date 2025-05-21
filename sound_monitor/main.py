@@ -5,6 +5,7 @@ import time
 from collections import OrderedDict
 
 from sound_monitor.audio.input import Input
+from sound_monitor.audio.record import Record
 from sound_monitor.audio.yamnet import Scores, YAMNet
 from sound_monitor.config import Config
 from sound_monitor.util.mail import mail
