@@ -5,7 +5,7 @@ import math
 import threading
 from collections import deque
 from collections.abc import Callable, Iterable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from math import gcd
 from queue import Queue
 
@@ -70,7 +70,14 @@ class Block:
         """resample the data to 16khz"""
         return resample_poly(data, self._resample_16khz_up, self._resample_16khz_down)
 
-    def __init__(self, data: np.ndarray, time: float, clock: datetime) -> None:
+    def __init__(self, id: int, data: np.ndarray, time: float, utc: datetime) -> None:
+        self.id: int = id
+        """
+        block id
+
+        a counter that is incremented for each block, with the first block being id=1
+        """
+
         self.data: np.ndarray = data
         """
         audio data -- shape (block_size, channels)
@@ -95,17 +102,26 @@ class Block:
         - the time values are monotonically increasing and have unspecified origin
         """
 
-        self.clock: datetime = clock
+        self.utc: datetime = utc
         """
-        capture time -- wall clock time
+        capture time -- utc time
 
-        calculated from stream times and when the callback was called
+        calculated from stream time and when the callback was called
         """
 
         self._gain_data: np.ndarray | None = None
         self._yamnet_data: np.ndarray | None = None
         self._peak_data: np.ndarray | None = None
         self._direction_data: np.ndarray | None = None
+
+    @property
+    def clock(self) -> datetime:
+        """
+        capture time -- local time
+
+        calculated from utc time
+        """
+        return self.utc.astimezone(_config.timezone)
 
     @property
     def gain_data(self) -> np.ndarray:
@@ -165,6 +181,7 @@ class Input(Singleton["Input"]):
     def __init__(self) -> None:
         self.error: str | None = None
 
+        self._block_id: int = 0  # see Block.id
         self._lifecycle: Lifecycle = Lifecycle()
 
         self._queue: Queue[Block] | None = None
@@ -189,13 +206,6 @@ class Input(Singleton["Input"]):
             if len(self._buffer) == 0:
                 return None
             return self._buffer[-1].time
-
-    @property
-    def clock(self) -> datetime | None:
-        with self._buffer_lock:
-            if len(self._buffer) == 0:
-                return None
-            return self._buffer[-1].clock
 
     def start(self) -> None:
         if not self._lifecycle.prepare_start():
@@ -313,17 +323,19 @@ class Input(Singleton["Input"]):
         status: sd.CallbackFlags,
     ) -> None:
 
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
 
         if status:
             _logger.warning(f"audio callback status: {status}")
 
         if self._queue is not None:
+            self._block_id += 1
             self._queue.put(
                 Block(
+                    id=self._block_id,
                     data=indata.copy(),
                     time=time.inputBufferAdcTime,
-                    clock=now
+                    utc=now
                     - timedelta(seconds=time.currentTime - time.inputBufferAdcTime),
                 )
             )

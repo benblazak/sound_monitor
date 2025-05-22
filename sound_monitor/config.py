@@ -3,6 +3,7 @@ import sys
 import sysconfig
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import sounddevice as sd
@@ -12,7 +13,9 @@ from sound_monitor.util.types.singleton import Singleton
 
 class Config(Singleton["Config"]):
 
+    timezone: ZoneInfo = ZoneInfo("America/Phoenix")
     data_dir: Path = Path(__file__).parent.parent / ".app"
+    log_path: Path | None = None  # see init
 
     @property
     def app_dir(self) -> Path:
@@ -141,14 +144,16 @@ class Config(Singleton["Config"]):
         ]
 
     date_format: str = "%Y-%m-%d"
-    datetime_format: str = "%Y-%m-%d_%H-%M-%S"
+    time_format: str = "%H-%M-%S"
+    tz_format: str = "%Z"
+    datetime_format: str = f"{date_format}--{time_format}--{tz_format}"
 
     def prefix(
         self,
         time: datetime | None = None,
         format: str | None = None,
     ) -> str:
-        time = time or datetime.now()
+        time = time or datetime.now(self.timezone)
         format = format or self.datetime_format
         return time.strftime(format)
 
@@ -156,14 +161,15 @@ class Config(Singleton["Config"]):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.app_dir.mkdir(parents=True, exist_ok=True)
 
-        log_path = self.data_dir / f"{self.prefix()}.log"
+        self.log_path = self.data_dir / f"{self.prefix()}.log"
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
 
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
+            datefmt=self.datetime_format,
             handlers=[
-                logging.FileHandler(log_path),
+                logging.FileHandler(self.log_path),
             ],
         )
 
