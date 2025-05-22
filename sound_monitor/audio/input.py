@@ -200,6 +200,7 @@ class Input(Singleton["Input"]):
     def start(self) -> None:
         if not self._lifecycle.prepare_start():
             return
+        _logger.info("starting")
 
         with self._callbacks_lock:
             self._callbacks.clear()
@@ -227,6 +228,7 @@ class Input(Singleton["Input"]):
     def stop(self) -> None:
         if not self._lifecycle.prepare_stop():
             return
+        _logger.info("stopping")
 
         if self._stream is not None:
             self._stream.stop()

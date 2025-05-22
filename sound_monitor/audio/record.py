@@ -57,6 +57,7 @@ class Record:
         """
         if not self._lifecycle.prepare_start():
             raise RuntimeError("already started")
+        _logger.info("starting")
 
         self._queue = Queue()
 
@@ -83,6 +84,7 @@ class Record:
         """
         if not self._lifecycle.prepare_stop():
             return
+        _logger.info("stopping")
 
         _input.remove_callback(f"record-{id(self)}")
 
