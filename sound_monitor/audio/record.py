@@ -35,8 +35,8 @@ class Record:
 
         self.start_time: float | None = None  # stream time
         self.stop_time: float | None = None  # stream time
-        self.start_clock: datetime | None = None  # wall clock time
-        self.stop_clock: datetime | None = None  # wall clock time
+        self.start_utc: datetime | None = None  # utc time
+        self.stop_utc: datetime | None = None  # utc time
 
         self._lifecycle = Lifecycle()
 
@@ -117,7 +117,7 @@ class Record:
 
         if self._last_block is not None:
             self.stop_time = self._last_block.time + _input.block_seconds
-            self.stop_clock = self._last_block.clock + timedelta(
+            self.stop_utc = self._last_block.utc + timedelta(
                 seconds=_input.block_seconds
             )
 
@@ -140,13 +140,10 @@ class Record:
                         f"can't trim {self.path} to stop+{time-self.stop_time}s -- doing nothing"
                     )
                 else:
-                    length = self.stop_time - self.start_time
                     trim_length = time - self.start_time
                     audio_trim(self.path, length=trim_length)
                     self.stop_time = time
-                    self.stop_clock = self.stop_clock - timedelta(
-                        seconds=length - trim_length
-                    )
+                    self.stop_utc = self.start_utc + timedelta(seconds=trim_length)
             except Exception:
                 _logger.exception("trim failed")
 
@@ -176,10 +173,9 @@ class Record:
                 # first block
                 if self.start_time is None:
                     self.start_time = block.time
-                    self.start_clock = block.clock
-
+                    self.start_utc = block.utc
                     self.path = _config.data_dir / (
-                        _config.prefix(self.start_clock)
+                        _config.prefix(block.clock)
                         + (f"_{self.name}" if self.name else "")
                         + ".mp3"
                     )

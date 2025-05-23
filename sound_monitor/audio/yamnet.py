@@ -23,6 +23,12 @@ _logger = logging.getLogger(__name__)
 _input = Input.get()
 
 
+# TODO make a view
+# TODO make functions to map mean, max, 95th percentile, over a group of scores
+# TODO take out the previous scores stuff
+# TODO store utc instead of clock, make clock a property
+# TODO might not need block id in input.py
+# TODO might want to round utc to nearest .1s in input.py?
 class Scores:
 
     @staticmethod
