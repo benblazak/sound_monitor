@@ -70,14 +70,7 @@ class Block:
         """resample the data to 16khz"""
         return resample_poly(data, self._resample_16khz_up, self._resample_16khz_down)
 
-    def __init__(self, id: int, data: np.ndarray, time: float, utc: datetime) -> None:
-        self.id: int = id
-        """
-        block id
-
-        a counter that is incremented for each block, with the first block being id=1
-        """
-
+    def __init__(self, data: np.ndarray, time: float, utc: datetime) -> None:
         self.data: np.ndarray = data
         """
         audio data -- shape (block_size, channels)
@@ -181,7 +174,6 @@ class Input(Singleton["Input"]):
     def __init__(self) -> None:
         self.error: str | None = None
 
-        self._block_id: int = 0  # see Block.id
         self._lifecycle: Lifecycle = Lifecycle()
 
         self._queue: Queue[Block] | None = None
@@ -329,10 +321,8 @@ class Input(Singleton["Input"]):
             _logger.warning(f"audio callback status: {status}")
 
         if self._queue is not None:
-            self._block_id += 1
             self._queue.put(
                 Block(
-                    id=self._block_id,
                     data=indata.copy(),
                     time=time.inputBufferAdcTime,
                     utc=now
