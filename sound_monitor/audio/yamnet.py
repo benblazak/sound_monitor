@@ -3,7 +3,7 @@ import functools
 import logging
 import math
 import threading
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Callable
 from datetime import datetime
 from queue import Queue
@@ -23,9 +23,6 @@ _logger = logging.getLogger(__name__)
 _input = Input.get()
 
 
-# TODO make functions to map mean, max, 95th percentile, (and maybe a custom
-# 'aggragate' that takes the max of 'dog' and the 95th percentile of other),
-# over a group of scores
 class Scores:
 
     @staticmethod
@@ -38,9 +35,8 @@ class Scores:
 
     class_names = _get_class_names()
 
-    # TODO might not need the `map_`
     @classmethod
-    def map_max(cls, scores: list[Self], time_index: int = 0) -> Self:
+    def max(cls, scores: list[Self], *, time_index: int = 0) -> Self:
         """
         max scores
 
@@ -73,6 +69,77 @@ class Scores:
             utc=start.utc,
         )
 
+    @classmethod
+    def mean(cls, scores: list[Self], *, time_index: int = 0) -> Self:
+        """
+        mean scores
+
+        args:
+        - scores: the scores to aggregate
+        - time_index: the index of the score to use for the time
+
+        notes:
+        - assuming a sorted `scores`, `time_index` should probably be
+          - 0 if the scores don't overlap in duration
+          - 1 if the scores overlap in duration
+          - this is because if the scores overlap, the time of the aggregate
+            should be the beginning of the overlapping period
+
+        returns:
+        - a `Scores` object with the aggregate data
+
+        raises:
+        - ValueError: if no scores are provided
+        """
+        if len(scores) == 0:
+            raise ValueError("no scores")
+        if len(scores) == 1:
+            return scores[0]
+
+        start = scores[time_index]
+        return cls(
+            data=np.mean([s.data for s in scores], axis=0),
+            time=start.time,
+            utc=start.utc,
+        )
+
+    @classmethod
+    def percentile(
+        cls, scores: list[Self], *, percentile: float, time_index: int = 0
+    ) -> Self:
+        """
+        percentile scores
+
+        args:
+        - scores: the scores to aggregate
+        - time_index: the index of the score to use for the time
+        - percentile: the percentile to use
+
+        notes:
+        - assuming a sorted `scores`, `time_index` should probably be
+          - 0 if the scores don't overlap in duration
+          - 1 if the scores overlap in duration
+          - this is because if the scores overlap, the time of the aggregate
+            should be the beginning of the overlapping period
+
+        returns:
+        - a `Scores` object with the aggregate data
+
+        raises:
+        - ValueError: if no scores are provided
+        """
+        if len(scores) == 0:
+            raise ValueError("no scores")
+        if len(scores) == 1:
+            return scores[0]
+
+        start = scores[time_index]
+        return cls(
+            data=np.percentile([s.data for s in scores], axis=0, q=percentile),
+            time=start.time,
+            utc=start.utc,
+        )
+
     def __init__(
         self,
         data: np.ndarray,
@@ -92,9 +159,35 @@ class Scores:
         self.time: float = time
         self.utc: datetime = utc
 
-    # TODO implement threshold? top n? rounding (and multiplying to make int?)?
-    def to_dict(self) -> dict[str, float]:
-        return dict(zip(self.class_names, self.data.tolist()))
+    def to_dict(
+        self,
+        *,
+        top: int | None = None,
+        threshold: float | None = None,
+    ) -> OrderedDict[str, float]:
+        """
+        convert to a dictionary
+
+        args:
+        - top: include at most this many entries, sorted by score, descending
+        - threshold: filter scores below this value
+
+        returns:
+        - a ordered dictionary (class name -> score)
+
+        notes:
+        - may have fewer than `top` scores if `threshold` is set
+        - scores are in class index order, unless `top` is set in which case
+          they are sorted by score, descending
+        """
+        indices = np.arange(len(self.data))
+
+        if top is not None:
+            indices = np.argsort(self.data)[-top:][::-1]
+        if threshold is not None:
+            indices = indices[self.data[indices] >= threshold]
+
+        return OrderedDict(zip(self.class_names[indices], self.data[indices]))
 
 
 class YAMNet(Singleton["YAMNet"]):

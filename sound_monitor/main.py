@@ -60,17 +60,8 @@ class App:
         sys.exit(0)
 
     def _callback_yamnet(self, data: Scores) -> None:
-        mean = data.mean
-        top = 100
-        threshold = 0.01
-        mean = OrderedDict(
-            {
-                k: v
-                for k, v in sorted(mean.items(), key=lambda x: x[1], reverse=True)[:top]
-                if v >= threshold
-            }
-        )
-        for k, v in reversed(mean.items()):
+        scores = data.to_dict(top=10)
+        for k, v in reversed(scores.items()):
             print(f"{v:.2f} - {k}")
         print()
 
