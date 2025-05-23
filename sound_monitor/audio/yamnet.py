@@ -23,12 +23,9 @@ _logger = logging.getLogger(__name__)
 _input = Input.get()
 
 
-# TODO make a view
-# TODO make functions to map mean, max, 95th percentile, over a group of scores
-# TODO take out the previous scores stuff
-# TODO store utc instead of clock, make clock a property
-# TODO might not need block id in input.py
-# TODO might want to round utc to nearest .1s in input.py?
+# TODO make functions to map mean, max, 95th percentile, (and maybe a custom
+# 'aggragate' that takes the max of 'dog' and the 95th percentile of other),
+# over a group of scores
 class Scores:
 
     @staticmethod
@@ -41,13 +38,46 @@ class Scores:
 
     class_names = _get_class_names()
 
+    # TODO might not need the `map_`
+    @classmethod
+    def map_max(cls, scores: list[Self], time_index: int = 0) -> Self:
+        """
+        max scores
+
+        args:
+        - scores: the scores to aggregate
+        - time_index: the index of the score to use for the time
+
+        notes:
+        - assuming a sorted `scores`, `time_index` should probably be
+          - 0 if the scores don't overlap in duration
+          - 1 if the scores overlap in duration
+          - this is because if the scores overlap, the time of the aggregate
+            should be the beginning of the overlapping period
+
+        returns:
+        - a `Scores` object with the aggregate data
+
+        raises:
+        - ValueError: if no scores are provided
+        """
+        if len(scores) == 0:
+            raise ValueError("no scores")
+        if len(scores) == 1:
+            return scores[0]
+
+        start = scores[time_index]
+        return cls(
+            data=np.max([s.data for s in scores], axis=0),
+            time=start.time,
+            utc=start.utc,
+        )
+
     def __init__(
         self,
         data: np.ndarray,
         time: float,
-        clock: datetime,
-        *,
-        previous: Self | None = None,
+        utc: datetime,
     ) -> None:
 
         self.data: np.ndarray = data
@@ -60,87 +90,11 @@ class Scores:
         """
 
         self.time: float = time
-        self.clock: datetime = clock
+        self.utc: datetime = utc
 
-        self.previous: Self | None = (
-            None
-            if previous is None
-            else self.__class__(
-                data=previous.data,
-                time=previous.time,
-                clock=previous.clock,
-            )
-        )
-        """
-        previous scores -- for calculating max and mean
-
-        notes:
-        - we make a (shallow) copy without previous.previous to avoid creating
-          an implicit linked list
-        """
-
-    @property
-    def raw(self) -> dict[str, float]:
-        """
-        raw scores
-
-        covering `time` to `time + 1s`
-
-        actually from `time` to `time + 0.96s`, but we'll treat it like a full
-        second
-        """
-        return dict(
-            zip(
-                self.class_names,
-                self.data,
-            )
-        )
-
-    @property
-    def max(self) -> dict[str, float]:
-        """
-        max scores
-
-        covering `time` to `time + 0.5s`
-
-        actually from `time` to `time + 0.46s`, but we'll treat it like a full
-        half second
-
-        each window overlaps with the previous window by about 0.5s. this is the
-        max of the scores for the two windows that overlap from `time` to
-        `time + 0.5s`
-        """
-        if self.previous is None:
-            return self.raw
-        return dict(
-            zip(
-                self.class_names,
-                np.max([self.previous.data, self.data], axis=0),
-            )
-        )
-
-    @property
-    def mean(self) -> dict[str, float]:
-        """
-        mean scores
-
-        covering `time` to `time + 0.5s`
-
-        actually from `time` to `time + 0.46s`, but we'll treat it like a full
-        half second
-
-        each window overlaps with the previous window by about 0.5s. this is the
-        mean of the scores for the two windows that overlap from `time` to
-        `time + 0.5s`
-        """
-        if self.previous is None:
-            return self.raw
-        return dict(
-            zip(
-                self.class_names,
-                np.mean([self.previous.data, self.data], axis=0),
-            )
-        )
+    # TODO implement threshold? top n? rounding (and multiplying to make int?)?
+    def to_dict(self) -> dict[str, float]:
+        return dict(zip(self.class_names, self.data.tolist()))
 
 
 class YAMNet(Singleton["YAMNet"]):
@@ -183,7 +137,6 @@ class YAMNet(Singleton["YAMNet"]):
 
         self._queue: Queue[deque[Block]] | None = None
         self._thread: threading.Thread | None = None
-        self._last_scores: Scores | None = None
 
         # locks: acquire in order
 
@@ -232,7 +185,6 @@ class YAMNet(Singleton["YAMNet"]):
 
         self._queue = None
         self._thread = None
-        self._last_scores = None
 
         self._lifecycle.state = State.STOPPED
 
@@ -275,40 +227,34 @@ class YAMNet(Singleton["YAMNet"]):
                     self._queue.task_done()
                     return
 
-                data = np.concatenate(
+                audio_data = np.concatenate(
                     [block.yamnet_data.reshape(-1) for block in blocks]
                 )[: self.window_samples]
                 time = blocks[0].time
-                clock = blocks[0].clock
+                utc = blocks[0].utc
 
                 self._interpreter.set_tensor(
                     self._waveform_input_index,
-                    data,
+                    audio_data,
                 )
                 self._interpreter.invoke()
 
-                scores: np.ndarray = self._interpreter.get_tensor(
+                scores_data: np.ndarray = self._interpreter.get_tensor(
                     self._scores_output_index,
                 )
-                scores = scores.reshape(-1)  # reshape from (1, 512) to (512,)
+                scores_data = scores_data.reshape(-1)  # reshape from (1, 512) to (512,)
 
-                self._last_scores = Scores(
-                    data=scores,
+                scores = Scores(
+                    data=scores_data,
                     time=time,
-                    clock=clock,
-                    previous=self._last_scores,
+                    utc=utc,
                 )
 
                 calls = deque()
 
                 with self._callbacks_lock:
                     for c in self._callbacks.values():
-                        calls.append(
-                            functools.partial(
-                                c["callback"],
-                                data=self._last_scores,
-                            )
-                        )
+                        calls.append(functools.partial(c["callback"], data=scores))
 
                 for c in calls:
                     c()
