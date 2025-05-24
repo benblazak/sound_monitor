@@ -1,42 +1,13 @@
-"""sound_monitor.audio.peak
+# TODO from claude, review
 
-Real-time peak detector for barking events.
-
-Algorithm (plain English)
--------------------------
-1. The microphone delivers 0.10 s *blocks* (frames of raw PCM).
-2. We analyse the stream in overlapping 0.50 s *windows* that slide by
-   0.30 s – every analysis step therefore sees:
-       0.10 s   left-hand **context** (ignored when reporting)
-       0.30 s   **valid region** where peaks are accepted
-       0.10 s   right-hand **context** (guarantees full coverage)
-3. Inside each window we build an RMS envelope (10 ms smoothing) and let
-   ``scipy.signal.find_peaks`` locate peaks whose width fits a bark
-   (70–150 ms) and whose height stands **k·MAD** above the running median
-   of the noise floor.
-4. A simple exponential smoother with time-constant
-   ``THRESHOLD_SMOOTH_SEC`` (≈10 s) updates the median and MAD, so the
-   threshold tracks slow background changes but ignores short-lived
-   peaks.
-
-Tunable parameters
-------------------
-THRESHOLD_SMOOTH_SEC – how fast the noise floor estimate adapts.  Lower
-values follow ambience changes faster but risk reacting to bursts.
-THRESHOLD_K_MAD       – how many "robust sigmas" above the noise floor a
-peak must rise to be reported.
-
-These two parameters affect *what* gets reported, so they are exposed in
-``sound_monitor.config``; everything else is implementation detail.
-"""
-
-# TODO this is mostly from o3, need to go through it, understand it, and then rewrite :)
-
+import functools
 import logging
+import math
+import threading
 from collections import deque
+from collections.abc import Callable
 from datetime import datetime
 from queue import Queue
-from threading import Lock, Thread
 
 import numpy as np
 from scipy.ndimage import uniform_filter1d
@@ -44,229 +15,373 @@ from scipy.signal import find_peaks, peak_widths
 
 from sound_monitor.audio.input import Block, Input
 from sound_monitor.config import Config
+from sound_monitor.util.types.lifecycle import Lifecycle, State
 from sound_monitor.util.types.singleton import Singleton
 
 _config = Config.get()
 _logger = logging.getLogger(__name__)
 
-_input = Input.get()  # reuse the singleton like yamnet.py
-
-
-class _Block:
-    def __init__(self, data: deque[Block]) -> None:
-        # use filtered mono signal for peak detection
-        self.raw = data
-        self.data = np.concatenate([block.peak_data.reshape(-1) for block in data])
-        self.time = data[0].time  # stream time of first sample in this hop
-        self.clock = data[0].clock
+_input = Input.get()
 
 
 class Event:
-    """One detected peak inside a hop.
-
-    Parameters
-    ----------
-    time : float
-        Stream time of the first sample of the peak centre.
-    clock : datetime
-        Wall-clock time that corresponds to ``time``.
-    amplitude : float
-        Envelope height at the detected peak.
-    width : float
-        Width estimate in **seconds** (full width at half prominence).
+    """
+    A detected barking event (or other loud sound).
+    
+    This represents a single sound that was loud enough and the right 
+    duration to be considered interesting (like a dog bark).
     """
 
-    def __init__(self, time: float, clock: datetime, amplitude: float, width: float):
-        self.time = time
-        self.clock = clock
-        self.amplitude = amplitude
-        self.width = width
+    def __init__(
+        self,
+        amplitude: float,
+        width: float,
+        time: float,
+        utc: datetime,
+    ) -> None:
+        self.amplitude: float = amplitude
+        """how loud the peak was (higher = louder)"""
+
+        self.width: float = width
+        """how long the sound lasted in seconds (e.g., 0.1s for a bark)"""
+
+        self.time: float = time
+        """stream time when the peak occurred"""
+
+        self.utc: datetime = utc
+        """utc time when the peak occurred"""
+
+    @property
+    def clock(self) -> datetime:
+        """local time when the peak occurred"""
+        return self.utc.astimezone(_config.timezone)
 
 
 class Peak(Singleton["Peak"]):
+    """
+    Real-time peak detector for barking events.
+    
+    HOW IT WORKS (in simple terms):
+    1. Takes audio in 0.5-second windows, sliding every 0.3 seconds
+    2. Smooths the audio to create an "envelope" (like drawing a line over the peaks)
+    3. Learns what "background noise" sounds like over time
+    4. Detects sounds that are much louder than background AND the right duration for barks
+    5. Reports these as "events"
+    
+    WHY THE SLIDING WINDOWS:
+    - 0.5s window: Long enough to capture a full bark
+    - 0.3s hop: Short enough to not miss rapid barks
+    - Context on both sides: Ensures we don't cut off sounds at window edges
+    """
 
-    # --- signal-processing constants -------------------------------------------------
+    # timing parameters - how we slice up the audio stream
+    window_seconds: float = 0.50    # analyze 0.5s of audio at a time
+    hop_seconds: float = 0.30       # move forward 0.3s between analyses
+    context_seconds: float = 0.10   # extra audio on each side for context
+    
+    # sound characteristics - what we're looking for
+    bark_min_width: float = 0.07    # barks are at least 70ms long
+    bark_max_width: float = 0.15    # barks are at most 150ms long
+    envelope_smooth: float = 0.10   # smooth audio over 100ms to create envelope
+    
+    # adaptive threshold parameters - how we learn background noise
+    noise_adapt_seconds: float = getattr(_config, 'peak_threshold_smooth_seconds', 10.0)
+    """how quickly we adapt to background noise changes (10s = slow adaptation)"""
+    
+    threshold_multiplier: float = getattr(_config, 'peak_threshold_k_mad', 4.0)
+    """how much louder than background noise a sound must be to count as an event"""
+
+    # convert timing to samples
     sample_rate = _config.uma8_sample_rate
-    window_seconds = 0.50
-    hop_seconds = 0.30
-    context_seconds = 0.10  # on each side
-    peak_width_seconds = 0.10
-    THRESHOLD_SMOOTH_SEC = _config.peak_threshold_smooth_seconds  # ≈10 s
-    THRESHOLD_K_MAD = _config.peak_threshold_k_mad  # e.g. 4
-
     window_samples = int(window_seconds * sample_rate)
     hop_samples = int(hop_seconds * sample_rate)
     context_samples = int(context_seconds * sample_rate)
-    valid_left = context_samples
-    valid_right = context_samples + hop_samples  # 0.10s+0.30s = 0.40s (exclusive)
-
-    peak_width_samples = int(peak_width_seconds * sample_rate)
-    distance_samples = peak_width_samples // 2  # ensure separation of detected peaks
-
-    # how many 0.1-s Input blocks make up one hop (should be 3)
-    input_interval = int(hop_seconds * _input.blocks_per_second)
+    envelope_samples = int(envelope_smooth * sample_rate)
+    
+    # convert timing to input blocks (input gives us ~10 blocks per second)
+    window_blocks = math.ceil(window_seconds * _input.blocks_per_second)
+    hop_blocks = round(hop_seconds * _input.blocks_per_second)
+    
+    # detection region within each window (skip the context padding)
+    valid_start = context_samples
+    valid_end = context_samples + hop_samples
+    
+    # minimum distance between detected peaks (prevents double-detection)
+    min_peak_separation = envelope_samples // 2
 
     def __init__(self) -> None:
-        self._queue: Queue[_Block] | None = None
-        self._thread: Thread | None = None
+        self.error: str | None = None
 
-        # detection state
-        self._tail = np.zeros(self.window_samples - self.hop_samples, dtype=np.float32)
-        self._med: float | None = None
-        self._mad: float | None = None
-        self._alpha = self.hop_seconds / self.THRESHOLD_SMOOTH_SEC
+        self._lifecycle: Lifecycle = Lifecycle()
 
-        # results + callbacks
-        self._event: Event | None = None
-        self._event_lock = Lock()
-        self._callbacks: dict[str, dict] = {}
-        self._callbacks_lock = Lock()
+        self._queue: Queue[deque[Block]] | None = None
+        self._thread: threading.Thread | None = None
 
-    # --------------------------------------------------------------------- public ---
-    def start(self) -> None:
-        if self._queue is not None:
-            return  # already running
-        self._queue = Queue()
-        _input.register_callback(
-            f"peak-{id(self)}", self._callback, interval=self.input_interval
+        # sliding window state - we keep some audio from the previous analysis
+        self._audio_tail = np.zeros(
+            self.window_samples - self.hop_samples, 
+            dtype=np.float32
         )
-        self._thread = Thread(target=self._worker, daemon=True)
-        self._thread.start()
+        
+        # adaptive noise floor tracking
+        # MAD = "Median Absolute Deviation" - a robust way to measure noise variation
+        # Think of it like standard deviation, but less affected by occasional loud sounds
+        self._noise_median: float | None = None     # typical background noise level
+        self._noise_mad: float | None = None        # how much background noise varies
+        self._noise_alpha = self.hop_seconds / self.noise_adapt_seconds  # adaptation speed
 
-    def stop(self) -> None:
-        _input.remove_callback(f"peak-{id(self)}")
-        if self._queue is not None:
-            self._queue.put(None)
-        if self._thread is not None:
-            self._thread.join(timeout=5)
-            if self._thread.is_alive():
-                _logger.error("peak worker failed to stop")
-        self._queue = None
-        self._thread = None
-        self._tail = np.zeros_like(self._tail)
-        self._med = self._mad = None
+        # results storage
+        self._latest_event: Event | None = None
+        self._event_lock = threading.Lock()
 
-    # ---------------- YAMNet-style public interface -------------------
+        # callback management
+        self._callbacks: dict[str, dict] = {}
+        self._callbacks_lock = threading.Lock()
+
+    @property
+    def state(self) -> State:
+        return self._lifecycle.state
+
     @property
     def event(self) -> Event | None:
-        """Latest detected peak (or *None* if none seen yet)."""
+        """latest detected event (or None if no events detected yet)"""
         with self._event_lock:
-            return self._event
+            return self._latest_event
 
-    @property
-    def time(self) -> float:
-        return self._event.time if self._event else _input.time
+    def start(self) -> None:
+        if not self._lifecycle.prepare_start():
+            return
+        _logger.info("starting")
 
-    @property
-    def clock(self):
-        return self._event.clock if self._event else _input.clock
-
-    # callbacks ---------------------------------------------------------------------
-    def register_callback(self, name: str, callback):
         with self._callbacks_lock:
-            self._callbacks[name] = {"callback": callback}
+            self._callbacks.clear()
 
-    def remove_callback(self, name: str):
+        with self._event_lock:
+            self._latest_event = None
+
+        # reset detection state
+        self._audio_tail = np.zeros_like(self._audio_tail)
+        self._noise_median = None
+        self._noise_mad = None
+
+        self._queue = Queue()
+
+        self._thread = threading.Thread(target=self._worker)
+        self._thread.start()
+
+        _input.register_callback(
+            f"peak-{id(self)}",
+            self._callback,
+            window=self.window_blocks,
+            hop=self.hop_blocks,
+        )
+
+        self._lifecycle.state = State.STARTED
+
+    def stop(self) -> None:
+        if not self._lifecycle.prepare_stop():
+            return
+        _logger.info("stopping")
+
+        _input.remove_callback(f"peak-{id(self)}")
+
+        if self._queue is not None:
+            self._queue.put(None)
+
+        if self._thread not in (None, threading.current_thread()):
+            self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                _logger.error("thread failed to stop")
+
+        with self._callbacks_lock:
+            self._callbacks.clear()
+
+        with self._event_lock:
+            self._latest_event = None
+
+        # reset detection state
+        self._audio_tail = np.zeros_like(self._audio_tail)
+        self._noise_median = None
+        self._noise_mad = None
+
+        self._queue = None
+        self._thread = None
+
+        self._lifecycle.state = State.STOPPED
+
+    def register_callback(
+        self,
+        name: str,
+        callback: Callable[[Event], None],
+    ) -> None:
+        """
+        register a callback for when events are detected
+
+        args:
+        - name: callback name (must be unique)
+        - callback: callback function
+          - signature: `callback(event: Event)`
+        """
+        with self._callbacks_lock:
+            self._callbacks[name] = {
+                "callback": callback,
+            }
+
+    def remove_callback(self, name: str) -> None:
+        """
+        remove a callback
+        """
         with self._callbacks_lock:
             if name in self._callbacks:
                 del self._callbacks[name]
 
-    # ------------------------------------------------------------------ internals ---
-    def _callback(self, input: Input) -> None:
-        if self._queue is None:
-            return
-        blocks = input.last_blocks(self.input_interval)
-        self._queue.put(_Block(blocks))
+    def _callback(self, data: deque[Block]) -> None:
+        if self._queue is not None:
+            self._queue.put(data)
 
     def _worker(self) -> None:
         try:
             while True:
-                blk = self._queue.get()
-                self._queue.task_done()
-                if blk is None:
+                blocks = self._queue.get()
+
+                if blocks is None:
+                    self._queue.task_done()
                     return
-                self._process_block(blk)
+
+                self._process_audio_blocks(blocks)
+                self._queue.task_done()
+
         except Exception:
-            _logger.exception("error in peak worker")
+            self.error = "error in worker"
+            _logger.exception(self.error)
             self.stop()
 
-    def _process_block(self, blk: _Block) -> None:
-        # warm-up: need one full hop before we have real context
-        if not hasattr(self, "_warm"):
-            self._tail = blk.data[-self._tail.shape[0] :]
-            self._warm = True
-            return
+    def _process_audio_blocks(self, blocks: deque[Block]) -> None:
+        """
+        Main peak detection algorithm.
+        
+        STEP BY STEP:
+        1. Build a sliding window of audio (current + previous tail)
+        2. Create a smooth envelope to find the overall loudness over time
+        3. Learn what the background noise looks like
+        4. Find peaks that are much louder than background and bark-shaped
+        5. Report any valid events found
+        """
+        
+        # concatenate filtered mono audio data
+        new_audio = np.concatenate(
+            [block.peak_data.reshape(-1) for block in blocks]
+        )
 
-        # 1. build analysis frame (tail + new hop)
-        frame = np.concatenate([self._tail, blk.data])
-        if frame.shape[0] < self.window_samples:
-            pad = np.zeros(self.window_samples - frame.shape[0], dtype=frame.dtype)
-            frame = np.concatenate([frame, pad])
+        # STEP 1: Build sliding window
+        # Combine leftover audio from last time with new audio
+        window_audio = np.concatenate([self._audio_tail, new_audio])
+        
+        # Pad or trim to exact window size
+        if len(window_audio) < self.window_samples:
+            padding = np.zeros(self.window_samples - len(window_audio), dtype=np.float32)
+            window_audio = np.concatenate([window_audio, padding])
         else:
-            frame = frame[: self.window_samples]
+            window_audio = window_audio[:self.window_samples]
 
-        # 2. RMS envelope
-        env = np.sqrt(
+        # STEP 2: Create smooth envelope
+        # RMS envelope = "how loud is the audio at each moment"
+        # We square the audio (makes positive), smooth it, then take square root
+        envelope = np.sqrt(
             uniform_filter1d(
-                frame.astype(np.float32) ** 2,
-                size=self.peak_width_samples,
+                window_audio.astype(np.float32) ** 2,
+                size=self.envelope_samples,
                 mode="constant",
             )
         )
 
-        # 3. update noise statistics (median + MAD)
-        m_win = float(np.median(env))
-        d_win = float(np.median(np.abs(env - m_win)))
-        if self._med is None:
-            self._med, self._mad = m_win, d_win
+        # STEP 3: Learn background noise characteristics
+        # We use median (middle value) instead of average because it ignores loud sounds
+        current_median = float(np.median(envelope))
+        
+        # MAD = Median Absolute Deviation = how spread out the noise is
+        # It's like standard deviation but more robust to outliers
+        current_mad = float(np.median(np.abs(envelope - current_median)))
+        
+        # Slowly adapt our noise estimates (exponential smoothing)
+        if self._noise_median is None:
+            # First time - just use current values
+            self._noise_median = current_median
+            self._noise_mad = current_mad
         else:
-            self._med = (1 - self._alpha) * self._med + self._alpha * m_win
-            self._mad = (1 - self._alpha) * self._mad + self._alpha * d_win
+            # Update gradually - mostly keep old estimate, blend in new
+            self._noise_median = (1 - self._noise_alpha) * self._noise_median + self._noise_alpha * current_median
+            self._noise_mad = (1 - self._noise_alpha) * self._noise_mad + self._noise_alpha * current_mad
 
-        threshold = self._med + self.THRESHOLD_K_MAD * self._mad
+        # Set detection threshold: background + (variation × multiplier)
+        # A sound must be this loud to be considered an event
+        detection_threshold = self._noise_median + self.threshold_multiplier * self._noise_mad
 
-        # 4. peak detection
-        peaks, props = find_peaks(
-            env,
-            height=threshold,
-            distance=self.distance_samples,
-            width=(int(0.07 * self.sample_rate), int(0.15 * self.sample_rate)),
+        # STEP 4: Find peaks that look like barks
+        peaks, properties = find_peaks(
+            envelope,
+            height=detection_threshold,                                          # must be loud enough
+            distance=self.min_peak_separation,                                   # can't be too close together
+            width=(
+                int(self.bark_min_width * self.sample_rate),                    # must be at least bark_min_width
+                int(self.bark_max_width * self.sample_rate)                     # must be at most bark_max_width
+            ),
         )
 
-        # 5. filter to valid region
-        mask = (peaks >= self.valid_left) & (peaks < self.valid_right)
-        peaks = peaks[mask]
-        if len(peaks) == 0:
-            self._roll_tail(frame)
+        # STEP 5: Filter to valid detection region (skip the context padding)
+        valid_mask = (peaks >= self.valid_start) & (peaks < self.valid_end)
+        valid_peaks = peaks[valid_mask]
+        
+        if len(valid_peaks) == 0:
+            # No events found - just save tail for next time
+            self._save_audio_tail(window_audio)
             return
 
-        widths = (
-            peak_widths(env, peaks, rel_height=0.5)[0] / self.sample_rate
-        )  # seconds
-        heights = props["peak_heights"][mask]
+        # Calculate peak characteristics
+        peak_widths_seconds = (
+            peak_widths(envelope, valid_peaks, rel_height=0.5)[0] / self.sample_rate
+        )
+        peak_amplitudes = properties["peak_heights"][valid_mask]
 
-        # 6. emit events
-        events: list[Event] = []
-        for idx, amp, wid in zip(peaks, heights, widths):
-            # estimate absolute time of peak centre
-            t_rel = (idx - self.context_samples) / self.sample_rate
-            evt_time = blk.time + t_rel - (self.window_seconds - self.hop_seconds)
-            events.append(Event(evt_time, blk.clock, float(amp), float(wid)))
+        # Create Event objects
+        events = []
+        for peak_idx, amplitude, width in zip(valid_peaks, peak_amplitudes, peak_widths_seconds):
+            # Calculate when this peak happened in absolute time
+            # peak_idx is position in window, we need to convert to stream time
+            time_in_window = (peak_idx - self.context_samples) / self.sample_rate
+            absolute_time = blocks[0].time + time_in_window - (self.window_seconds - self.hop_seconds)
+            
+            event = Event(
+                amplitude=float(amplitude),
+                width=float(width),
+                time=absolute_time,
+                utc=blocks[0].utc,
+            )
+            events.append(event)
 
         if events:
-            # keep loudest event only (for now)
-            evt = max(events, key=lambda e: e.amplitude)
+            # Keep the loudest event (for now - could report all)
+            loudest_event = max(events, key=lambda e: e.amplitude)
+            
+            # Store latest event
             with self._event_lock:
-                self._event = evt
-            callbacks = []
+                self._latest_event = loudest_event
+
+            # Notify callbacks
+            calls = deque()
             with self._callbacks_lock:
-                callbacks = [c for c in self._callbacks.values()]
-            for c in callbacks:
-                c["callback"](peak=self, events=events)
+                for callback_info in self._callbacks.values():
+                    calls.append(functools.partial(callback_info["callback"], loudest_event))
 
-        # 7. roll tail for next frame
-        self._roll_tail(frame)
+            for call in calls:
+                call()
 
-    def _roll_tail(self, frame: np.ndarray) -> None:
-        # keep rightmost window-hop samples
-        self._tail = frame[self.hop_samples :]
+        # Save audio tail for next iteration
+        self._save_audio_tail(window_audio)
+
+    def _save_audio_tail(self, window_audio: np.ndarray) -> None:
+        """
+        Save the end of this window to use as the beginning of the next window.
+        This creates the "sliding" effect in our sliding window analysis.
+        """
+        self._audio_tail = window_audio[self.hop_samples:]
