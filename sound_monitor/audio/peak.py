@@ -218,7 +218,7 @@ class Peak(Singleton["Peak"]):
         args:
         - name: callback name (must be unique)
         - callback: callback function
-          - signature: `callback(event: Event)`
+          - signature: `callback(data: Event)`
         """
         with self._callbacks_lock:
             self._callbacks[name] = {
@@ -384,7 +384,7 @@ class Peak(Singleton["Peak"]):
             calls = deque()
             with self._callbacks_lock:
                 for callback_info in self._callbacks.values():
-                    calls.append(functools.partial(callback_info["callback"], loudest_event))
+                    calls.append(functools.partial(callback_info["callback"], data=loudest_event))
 
             for call in calls:
                 call()

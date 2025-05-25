@@ -158,7 +158,7 @@ class RMS(Singleton["RMS"]):
         args:
         - name: callback name (must be unique)
         - callback: callback function
-          - signature: `callback(levels: Levels)`
+          - signature: `callback(data: Levels)`
         """
         with self._callbacks_lock:
             self._callbacks[name] = {
@@ -186,7 +186,8 @@ class RMS(Singleton["RMS"]):
                     self._queue.task_done()
                     return
 
-                # concatenate mono audio data for RMS calculation
+                # concatenate unfiltered mono audio data for RMS calculation
+                # use unfiltered audio to measure overall ambient noise levels
                 audio_data = np.concatenate(
                     [block.mono_data.reshape(-1) for block in blocks]
                 )
@@ -198,7 +199,7 @@ class RMS(Singleton["RMS"]):
                 if rms > 0:
                     db = 20 * math.log10(rms / self.db_reference)
                 else:
-                    db = float("-inf")  # or use a very low value like -120 dB
+                    db = float("-inf")  # mathematically correct for zero amplitude
 
                 # use timing from first block
                 time = blocks[0].time
@@ -219,7 +220,7 @@ class RMS(Singleton["RMS"]):
                 calls = deque()
                 with self._callbacks_lock:
                     for c in self._callbacks.values():
-                        calls.append(functools.partial(c["callback"], levels=levels))
+                        calls.append(functools.partial(c["callback"], data=levels))
 
                 for c in calls:
                     c()
