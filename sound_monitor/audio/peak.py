@@ -13,6 +13,7 @@ import numpy as np
 from scipy.ndimage import uniform_filter1d
 from scipy.signal import find_peaks, peak_widths
 
+from sound_monitor.audio.direction import Direction, find_direction
 from sound_monitor.audio.input import Block, Input
 from sound_monitor.config import Config
 from sound_monitor.util.types.lifecycle import Lifecycle, State
@@ -38,6 +39,7 @@ class Event:
         width: float,
         time: float,
         utc: datetime,
+        direction: Direction,
     ) -> None:
         self.amplitude: float = amplitude
         """how loud the peak was (higher = louder)"""
@@ -50,6 +52,9 @@ class Event:
 
         self.utc: datetime = utc
         """utc time when the peak occurred"""
+        
+        self.direction: Direction = direction
+        """direction the sound came from (xyz unit vector + confidence)"""
 
     @property
     def clock(self) -> datetime:
@@ -268,9 +273,14 @@ class Peak(Singleton["Peak"]):
         5. Report any valid events found
         """
         
-        # concatenate filtered mono audio data
+        # concatenate filtered mono audio data for peak detection
         new_audio = np.concatenate(
             [block.peak_data.reshape(-1) for block in blocks]
+        )
+        
+        # also prepare multi-channel audio for direction finding
+        new_multichannel_audio = np.concatenate(
+            [block.direction_data for block in blocks]
         )
 
         # STEP 1: Build sliding window
@@ -343,19 +353,52 @@ class Peak(Singleton["Peak"]):
         )
         peak_amplitudes = properties["peak_heights"][valid_mask]
 
-        # Create Event objects
+        # Create Event objects with direction information
         events = []
-        for peak_idx, amplitude, width in zip(valid_peaks, peak_amplitudes, peak_widths_seconds):
+        for i, (peak_idx, amplitude, width) in enumerate(zip(valid_peaks, peak_amplitudes, peak_widths_seconds)):
             # Calculate when this peak happened in absolute time
             # peak_idx is position in window, we need to convert to stream time
             time_in_window = (peak_idx - self.context_samples) / self.sample_rate
             absolute_time = blocks[0].time + time_in_window - (self.window_seconds - self.hop_seconds)
+            
+            # Extract audio around this peak for direction finding
+            # Use the actual detected peak width, but ensure minimum size for good correlation
+            width_samples = int(width * self.sample_rate)
+            direction_window_samples = max(width_samples * 2, self.envelope_samples)  # at least 2x peak width or 100ms
+            
+            peak_start = max(0, peak_idx - direction_window_samples // 2)
+            peak_end = min(len(window_audio), peak_idx + direction_window_samples // 2)
+            
+            # Map from window_audio coordinates to new_multichannel_audio coordinates
+            # window_audio = [tail] + [new_audio], new_multichannel_audio = [new_audio]
+            tail_length = len(self._audio_tail)
+            
+            if peak_start >= tail_length:
+                # Peak region is entirely in new audio
+                multichannel_start = peak_start - tail_length
+                multichannel_end = peak_end - tail_length
+            elif peak_end <= tail_length:
+                # Peak region is entirely in old audio - no multichannel data available
+                direction = Direction(x=1.0, y=0.0, z=0.0, azimuth_confidence=180.0, elevation_confidence=180.0)
+                multichannel_start = multichannel_end = 0  # Skip multichannel processing
+            else:
+                # Peak spans old and new audio - use only the new audio part
+                multichannel_start = 0
+                multichannel_end = peak_end - tail_length
+            
+            if multichannel_end > multichannel_start and multichannel_end <= len(new_multichannel_audio):
+                peak_multichannel_audio = new_multichannel_audio[multichannel_start:multichannel_end]
+                direction = find_direction(peak_multichannel_audio)
+            else:
+                # Fallback if we can't extract good audio
+                direction = Direction(x=1.0, y=0.0, z=0.0, azimuth_confidence=180.0, elevation_confidence=180.0)
             
             event = Event(
                 amplitude=float(amplitude),
                 width=float(width),
                 time=absolute_time,
                 utc=blocks[0].utc,
+                direction=direction,
             )
             events.append(event)
 
