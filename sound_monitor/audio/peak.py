@@ -355,7 +355,7 @@ class Peak(Singleton["Peak"]):
 
         # Create Event objects with direction information
         events = []
-        for i, (peak_idx, amplitude, width) in enumerate(zip(valid_peaks, peak_amplitudes, peak_widths_seconds)):
+        for peak_idx, amplitude, width in zip(valid_peaks, peak_amplitudes, peak_widths_seconds):
             # Calculate when this peak happened in absolute time
             # peak_idx is position in window, we need to convert to stream time
             time_in_window = (peak_idx - self.context_samples) / self.sample_rate
@@ -379,8 +379,7 @@ class Peak(Singleton["Peak"]):
                 multichannel_end = peak_end - tail_length
             elif peak_end <= tail_length:
                 # Peak region is entirely in old audio - no multichannel data available
-                direction = Direction(x=1.0, y=0.0, z=0.0, azimuth_confidence=180.0, elevation_confidence=180.0)
-                multichannel_start = multichannel_end = 0  # Skip multichannel processing
+                continue  # Skip this event
             else:
                 # Peak spans old and new audio - use only the new audio part
                 multichannel_start = 0
@@ -389,9 +388,12 @@ class Peak(Singleton["Peak"]):
             if multichannel_end > multichannel_start and multichannel_end <= len(new_multichannel_audio):
                 peak_multichannel_audio = new_multichannel_audio[multichannel_start:multichannel_end]
                 direction = find_direction(peak_multichannel_audio)
+                if direction is None:
+                    # Direction calculation failed - skip this event
+                    continue
             else:
-                # Fallback if we can't extract good audio
-                direction = Direction(x=1.0, y=0.0, z=0.0, azimuth_confidence=180.0, elevation_confidence=180.0)
+                # Can't extract good audio - skip this event
+                continue
             
             event = Event(
                 amplitude=float(amplitude),

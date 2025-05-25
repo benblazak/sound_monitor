@@ -17,17 +17,16 @@ class Direction(NamedTuple):
     
     The direction is stored as XYZ components of a unit vector, with
     azimuth/elevation available as properties. Confidence estimates
-    are separated because azimuth (from 2D fit) is much more reliable
-    than elevation (from 3D fit) with this flat array.
+    are separated and calculated rigorously from fit residuals.
     
     x, y, z: Unit vector components pointing toward the sound source
-    azimuth_confidence: Uncertainty in azimuth (degrees), from rigorous 2D analysis
-    elevation_confidence: Uncertainty in elevation (degrees), from geometric approximation
+    azimuth_confidence: Uncertainty in azimuth (degrees), from fit analysis
+    elevation_confidence: Uncertainty in elevation (degrees), from fit analysis
     
     Notes:
-    - Azimuth confidence is mathematically rigorous (2D least-squares + error propagation)
-    - Elevation confidence is approximate (will be large with flat array)
-    - For most purposes, trust azimuth, be skeptical of elevation
+    - Both confidence values are calculated from least-squares residuals
+    - Large confidence values naturally indicate poor data quality
+    - XY components come from whichever fit (2D or 3D) gives better accuracy
     """
     x: float
     y: float  
@@ -49,32 +48,32 @@ class Direction(NamedTuple):
     def elevation(self) -> float:
         """
         Elevation in degrees (-90° = straight down, +90° = straight up)
-        WARNING: Will be very noisy with flat microphone array.
+        Will be noisy with flat microphone array.
         """
         return math.degrees(math.asin(np.clip(self.z, -1.0, 1.0)))
 
 
-def find_direction(audio_data: np.ndarray) -> Direction:
+def find_direction(audio_data: np.ndarray) -> Direction | None:
     """
     Find the direction of a sound using two-stage TDOA analysis.
     
     ALGORITHM:
     1. Find time delays between all microphone pairs using correlation
-    2. Stage 1: 2D least-squares fit (z=0) for clean azimuth estimate
-    3. Stage 2: 3D fit for elevation estimate  
-    4. Rigorous error propagation for azimuth, geometric approximation for elevation
+    2. Fit both 2D (azimuth-only) and 3D (full direction) using least-squares
+    3. Use whichever gives better XY accuracy, with rigorous error propagation
+    4. Let residual magnitude naturally indicate data quality
     
     Args:
         audio_data: shape (samples, 7) - filtered audio from all 7 mics
                    Should contain a single clear sound event
     
     Returns:
-        Direction with unit vector (x,y,z) and separate confidence estimates
+        Direction with unit vector and confidence estimates, or None if calculation fails
     
     Notes:
-        - Optimized for short clips containing single transient sounds (barks)
-        - Azimuth confidence is rigorous and reliable
-        - Elevation confidence is approximate and will be large
+        - Large confidence values indicate poor data quality
+        - Returns None only for matrix singularity (very rare)
+        - No pre-filtering - let the math handle data quality assessment
     """
     
     if audio_data.shape[1] != 7:
@@ -82,7 +81,7 @@ def find_direction(audio_data: np.ndarray) -> Direction:
     
     if len(audio_data) < 10:
         # Too short to get reliable correlations
-        return Direction(x=1.0, y=0.0, z=0.0, azimuth_confidence=180.0, elevation_confidence=180.0)
+        return None
     
     # Get microphone positions and constants
     mic_positions = np.array(_config.uma8_mic_positions)
@@ -92,7 +91,6 @@ def find_direction(audio_data: np.ndarray) -> Direction:
     # STEP 1: Find time delays between all microphone pairs
     delays = []
     baselines = []  # mic position differences
-    weights = []    # correlation quality weights
     
     for i in range(7):
         for j in range(i + 1, 7):
@@ -101,16 +99,6 @@ def find_direction(audio_data: np.ndarray) -> Direction:
             
             # Cross-correlation to find time delay
             correlation = correlate(mic1_audio, mic2_audio, mode='full')
-            
-            # Check correlation quality before trusting the result
-            max_correlation = np.max(np.abs(correlation))
-            noise_floor = np.std(correlation)
-            correlation_snr = max_correlation / noise_floor if noise_floor > 0 else 0
-            
-            # Only use correlations with good signal-to-noise ratio
-            if correlation_snr < 2.0:  # Require at least 2:1 SNR
-                continue
-                
             peak_idx = np.argmax(np.abs(correlation))
             
             # Convert to time delay (positive = sound reached mic2 first)
@@ -122,103 +110,125 @@ def find_direction(audio_data: np.ndarray) -> Direction:
             max_delay = mic_distance / speed_of_sound
             delay_seconds = np.clip(delay_seconds, -max_delay, max_delay)
             
-            # Store results
+            # Store results  
             baseline = mic_positions[j] - mic_positions[i]  # vector from mic1 to mic2
             delays.append(delay_seconds * speed_of_sound)   # convert to distance units
             baselines.append(baseline)
-            weights.append(correlation_snr)  # weight by correlation quality
     
     if len(delays) < 3:
-        # Not enough good correlations
-        return Direction(x=1.0, y=0.0, z=0.0, azimuth_confidence=180.0, elevation_confidence=180.0)
+        # Need at least 3 constraints for meaningful fit
+        return None
     
     delays = np.array(delays)
     baselines = np.array(baselines)  # shape: (n_pairs, 3)
-    weights = np.array(weights)
     
-    # STEP 2: 2D least-squares fit for azimuth (z=0 constraint)
-    # Equation: baseline @ direction = delay
-    # For 2D: [baseline_x, baseline_y] @ [x, y] = delay
-    
+    # STEP 2: 2D least-squares fit (z=0 constraint)  
     A_2d = baselines[:, :2]  # just x,y components
-    b_2d = delays
-    W = np.diag(weights)     # weight matrix
     
     try:
-        # Weighted least squares: (A^T W A) x = A^T W b
-        AtWA = A_2d.T @ W @ A_2d
-        AtWb = A_2d.T @ W @ b_2d
+        direction_2d, residuals_2d, rank_2d, s_2d = np.linalg.lstsq(A_2d, delays, rcond=None)
         
-        direction_2d = np.linalg.solve(AtWA, AtWb)
-        
-        # Normalize to unit vector (azimuth only)
-        direction_2d_norm = direction_2d / np.linalg.norm(direction_2d)
-        x, y = direction_2d_norm
-        
-        # Calculate azimuth confidence using error propagation
-        residuals_2d = A_2d @ direction_2d - b_2d
-        residual_variance = np.sum(weights * residuals_2d**2) / (len(delays) - 2)  # weighted variance
-        
-        # Covariance matrix of direction estimate
-        try:
-            cov_matrix = np.linalg.inv(AtWA) * residual_variance
-            var_x, var_y = cov_matrix[0,0], cov_matrix[1,1]
-            cov_xy = cov_matrix[0,1]
+        if rank_2d < 2:
+            # Insufficient rank for 2D solution
+            return None
             
-            # Propagate to azimuth uncertainty: azimuth = atan2(y, x)
-            # d(azimuth)/dx = -y/(x^2 + y^2), d(azimuth)/dy = x/(x^2 + y^2)
+        # Normalize to unit vector
+        direction_2d_norm = direction_2d / np.linalg.norm(direction_2d)
+        
+        # Calculate covariance matrix and azimuth confidence
+        dof_2d = len(delays) - 2  # degrees of freedom
+        if len(residuals_2d) > 0 and dof_2d > 0:
+            residual_variance_2d = residuals_2d[0] / dof_2d
+            cov_matrix_2d = np.linalg.inv(A_2d.T @ A_2d) * residual_variance_2d
+            
+            # Error propagation for azimuth = atan2(y, x)
+            x, y = direction_2d_norm
             r_squared = x*x + y*y
             d_az_dx = -y / r_squared
             d_az_dy = x / r_squared
             
-            azimuth_variance = (d_az_dx**2 * var_x + 
-                              d_az_dy**2 * var_y + 
-                              2 * d_az_dx * d_az_dy * cov_xy)
+            azimuth_variance_2d = (d_az_dx**2 * cov_matrix_2d[0,0] + 
+                                  d_az_dy**2 * cov_matrix_2d[1,1] + 
+                                  2 * d_az_dx * d_az_dy * cov_matrix_2d[0,1])
             
-            azimuth_confidence = math.degrees(math.sqrt(abs(azimuth_variance)))
-            azimuth_confidence = max(1.0, min(azimuth_confidence, 180.0))  # reasonable bounds
-            
-        except np.linalg.LinAlgError:
-            azimuth_confidence = 30.0  # fallback
+            azimuth_confidence_2d = math.degrees(math.sqrt(abs(azimuth_variance_2d)))
+        else:
+            azimuth_confidence_2d = float('inf')  # no residual info
             
     except np.linalg.LinAlgError:
-        # Fallback to simple estimate
-        x, y = 1.0, 0.0
-        azimuth_confidence = 180.0
+        return None
     
-    # STEP 3: 3D fit for elevation estimate
+    # STEP 3: 3D least-squares fit
     try:
-        # Full 3D weighted least squares
-        AtWA_3d = baselines.T @ W @ baselines
-        AtWb_3d = baselines.T @ W @ b_2d
+        direction_3d, residuals_3d, rank_3d, s_3d = np.linalg.lstsq(baselines, delays, rcond=None)
         
-        direction_3d = np.linalg.solve(AtWA_3d, AtWb_3d)
-        direction_3d_norm = direction_3d / np.linalg.norm(direction_3d)
-        z = direction_3d_norm[2]
-        
-        # Simple elevation confidence estimate (geometric approximation)
-        residuals_3d = baselines @ direction_3d - b_2d
-        rms_residual = math.sqrt(np.mean(residuals_3d**2))
-        
-        # Convert residual to angular error (rough approximation)
-        array_radius = 0.04  # meters (approximate)
-        angular_error_rad = rms_residual / array_radius
-        elevation_confidence = math.degrees(angular_error_rad)
-        
-        # For flat arrays, elevation uncertainty is inherently large
-        elevation_confidence = max(elevation_confidence, 30.0)  # minimum reasonable value
-        elevation_confidence = min(elevation_confidence, 180.0)  # maximum bound
-        
+        if rank_3d < 3:
+            # Use 2D results only
+            x_final, y_final = direction_2d_norm
+            z_final = 0.0
+            azimuth_confidence_final = azimuth_confidence_2d
+            elevation_confidence_final = float('inf')
+        else:
+            # Normalize 3D solution
+            direction_3d_norm = direction_3d / np.linalg.norm(direction_3d)
+            
+            # Calculate 3D covariance matrix
+            dof_3d = len(delays) - 3
+            if len(residuals_3d) > 0 and dof_3d > 0:
+                residual_variance_3d = residuals_3d[0] / dof_3d
+                cov_matrix_3d = np.linalg.inv(baselines.T @ baselines) * residual_variance_3d
+                
+                # Calculate XY uncertainty from 3D fit
+                x3d, y3d, z3d = direction_3d_norm
+                r_squared_3d = x3d*x3d + y3d*y3d
+                d_az_dx_3d = -y3d / r_squared_3d
+                d_az_dy_3d = x3d / r_squared_3d
+                
+                azimuth_variance_3d = (d_az_dx_3d**2 * cov_matrix_3d[0,0] + 
+                                      d_az_dy_3d**2 * cov_matrix_3d[1,1] + 
+                                      2 * d_az_dx_3d * d_az_dy_3d * cov_matrix_3d[0,1])
+                
+                azimuth_confidence_3d = math.degrees(math.sqrt(abs(azimuth_variance_3d)))
+                
+                # Calculate elevation confidence: elevation = asin(z)
+                # d(elevation)/dz = 1/sqrt(1-z^2)
+                z_clipped = np.clip(z3d, -0.99, 0.99)  # avoid singularity
+                d_el_dz = 1.0 / math.sqrt(1 - z_clipped**2)
+                elevation_variance = d_el_dz**2 * cov_matrix_3d[2,2]
+                elevation_confidence_final = math.degrees(math.sqrt(abs(elevation_variance)))
+                
+                # Compare 2D vs 3D accuracy for XY components
+                if azimuth_confidence_2d <= azimuth_confidence_3d:
+                    # 2D fit gives better azimuth accuracy
+                    x_final, y_final = direction_2d_norm
+                    azimuth_confidence_final = azimuth_confidence_2d
+                else:
+                    # 3D fit actually helps azimuth accuracy  
+                    x_final, y_final = x3d, y3d
+                    azimuth_confidence_final = azimuth_confidence_3d
+                
+                z_final = z3d
+                
+            else:
+                # No residual info from 3D - fall back to 2D
+                x_final, y_final = direction_2d_norm
+                z_final = 0.0
+                azimuth_confidence_final = azimuth_confidence_2d
+                elevation_confidence_final = float('inf')
+                
     except np.linalg.LinAlgError:
-        z = 0.0
-        elevation_confidence = 180.0
+        # 3D fit failed - use 2D results
+        x_final, y_final = direction_2d_norm
+        z_final = 0.0
+        azimuth_confidence_final = azimuth_confidence_2d
+        elevation_confidence_final = float('inf')
     
     return Direction(
-        x=float(x),
-        y=float(y), 
-        z=float(z),
-        azimuth_confidence=azimuth_confidence,
-        elevation_confidence=elevation_confidence
+        x=float(x_final),
+        y=float(y_final), 
+        z=float(z_final),
+        azimuth_confidence=azimuth_confidence_final,
+        elevation_confidence=elevation_confidence_final
     )
 
 
@@ -251,10 +261,13 @@ def _test_direction_finding():
             fake_audio[:samples+delay_samples, mic_idx] += signal[-delay_samples:]
     
     result = find_direction(fake_audio)
-    print(f"True direction: 45.0°")
-    print(f"Detected: {result.azimuth:.1f}° ± {result.azimuth_confidence:.1f}° (azimuth)")
-    print(f"Elevation: {result.elevation:.1f}° ± {result.elevation_confidence:.1f}° (elevation)")
-    print(f"Unit vector: ({result.x:.3f}, {result.y:.3f}, {result.z:.3f})")
+    if result:
+        print(f"True direction: 45.0°")
+        print(f"Detected: {result.azimuth:.1f}° ± {result.azimuth_confidence:.1f}° (azimuth)")
+        print(f"Elevation: {result.elevation:.1f}° ± {result.elevation_confidence:.1f}° (elevation)")
+        print(f"Unit vector: ({result.x:.3f}, {result.y:.3f}, {result.z:.3f})")
+    else:
+        print("Direction calculation failed")
 
 
 if __name__ == "__main__":
