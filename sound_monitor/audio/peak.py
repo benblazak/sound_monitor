@@ -27,10 +27,10 @@ _input = Input.get()
 
 class Event:
     """
-    A detected barking event (or other loud sound).
-    
-    This represents a single sound that was loud enough and the right 
-    duration to be considered interesting (like a dog bark).
+    A detected animal sound event (or other loud sound).
+
+    This represents a single sound that was loud enough and the right
+    duration to be considered interesting.
     """
 
     def __init__(

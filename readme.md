@@ -1,6 +1,6 @@
 # sound monitor
 
-monitor sounds and record dog barks
+monitor sounds and record animal sounds
 
 ## hardware
 
@@ -56,6 +56,6 @@ see [mise tasks](./.mise.toml)
   - [ ] keep raw data, quantize (to 3 decimal places) and compress using numpy, store as binary in sqlite
     - [ ] can maybe write a view in the db for decoding, so i can see it in a db viewer? not sure about this
   - [ ] daily
-    - [ ] take max of 'dog', 95th percentile of other, over 5s windows
+    - [ ] take max of 'animal', 95th percentile of other, over 5s windows
   - [ ] weekly
-    - [ ] take max of 'dog', 95th percentile of other, over larger windows, starting from the 5s window data
+    - [ ] take max of 'animal', 95th percentile of other, over larger windows, starting from the 5s window data
